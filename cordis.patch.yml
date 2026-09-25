@@ -1,0 +1,33 @@
+# dsh-approval-center bundle patch
+#
+# 本文件经 package.json 的 dsh.bundle.patch 声明，`dsh plugin add` 安装时自动应用
+# （app-boot 的 reconcileProfilePlugins 会把本包追加进 dsh.profile.bundles）。
+#
+# 手动挂载：把下面 insert 复制进目标 profile 的 cordis.patch.yml 即可。
+# ⚠ 二选一：用 CLI 装过之后就不要再手动加 insert，否则插件会挂载两次
+#   （两个监听器抢同一个 approval/request waterfall；完成通知还会发两遍）。
+#   核验：`--dump-config` 里 dsh-approval-center 只应出现一次。
+#
+# 注意：插件在 approval/request 上以 { prepend: true } 抢先注册，确保排在
+# dsh-api-remotes（Web UI 审批应答者）之前；未匹配 tools 的请求仍会 next()
+# 转交回 Web GUI，两边共存。
+#
+# ⚠ 覆盖本配置时请用「id 定向补丁」而不是 insert，并把字段写全：
+#   DSH 的 patch 语义是 config 整体替换、不做深合并，缺的字段会落回 schema 默认值
+#   （例如只写 timeoutSec 会让 tools 变回 ['*']，即拦截全部审批）。
+- insert:
+    - id: approval-center
+      name: 'dsh-approval-center'
+      config:
+        # 完全镜像系统判断：DSH 只在它认为需要人类确认时才发起审批请求
+        # （本部署里就是模型显式请求沙箱提权：sandbox_permissions + justification）。
+        # 凡发到本插件的请求一律弹通知；插件不自行放宽或收紧任何策略。
+        # '*' = 认领全部工具，避免将来出现新请求源时被漏掉。
+        tools: ['*']
+        timeoutSec: 60
+        timeoutAction: reject            # 超时=无人应答，fail-closed（approve 会敞开大门，勿改）
+        queueMode: parallel
+        # 只保留"必须问"的审批通知：其余三类通知一律关，避免噪音。
+        notifyOnSubagentStart: false
+        notifyOnSubagentEnd: false
+        notifyOnApprovalResult: false

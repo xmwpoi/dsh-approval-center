@@ -1,0 +1,16 @@
+# 这个插件的 PowerShell 脚本对"字节"极其敏感，务必原样保存：
+#
+#   scripts/approval-toast.ps1 / toast.ps1  含中文，**必须带 UTF-8 BOM**。
+#     无 BOM 时 Windows PowerShell 5.1 会按系统 ANSI（本机 CP936）解码 → 语法错误 →
+#     脚本以 exit 1 退出 → 被插件误报成"用户拒绝"。这不是格式偏好，是功能正确性。
+#   scripts/approval-uri-handler.vbs  **必须保持纯 ASCII**（wscript 按 ANSI 读取 .vbs，
+#     非 ASCII 字节会被误解码，UTF-8 BOM 更会让它直接语法报错）。
+#
+# 只统一换行符，不做任何编码/过滤转换；BOM 与内容字节不受影响。
+*.ps1 text eol=crlf
+*.vbs text eol=crlf
+*.ts  text eol=lf
+*.js  text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.md   text eol=lf
