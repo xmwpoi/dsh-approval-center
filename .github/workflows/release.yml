@@ -1,0 +1,77 @@
+# 打 tag 即发布：构建 -> 校验 -> npm pack -> 把 tgz 挂到 GitHub Release。
+#
+# 这条路不需要任何 npm 账号，只用仓库自带的 GITHUB_TOKEN，也不用第三方 action。
+# 发布后使用者可以完全不碰 npm 注册表地安装：
+#
+#   dsh plugin --profile web add https://github.com/xmwpoi/dsh-approval-center/releases/download/v0.3.0/dsh-approval-center-0.3.0.tgz
+#
+# 用法：改好 package.json 的 version 与 CHANGELOG，然后
+#   git tag v0.3.0 && git push origin v0.3.0
+#
+# 重复推送同一个 tag 需要先删掉已有 Release（gh release delete v0.3.0）。
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # .npmrc 里的 omit=peer 会挡住 @deepseek-ai/dsh 那棵 ~476MB 的依赖树。
+      - run: npm ci
+
+      - run: npm run build
+
+      # files 里已含 lib/，npm pack 仍会跑一次 prepare（tsc），产物一致。
+      - name: Pack
+        run: npm pack
+
+      # 挂载期会校验这几个脚本文件，缺一个插件就拒绝挂载。
+      # 在发布前拦住比让使用者踩到好。
+      - name: Verify tarball
+        run: |
+          $tgz = (Get-ChildItem dsh-approval-center-*.tgz).Name
+          $entries = @(tar -tzf $tgz)
+          $required = @(
+            'package/lib/index.js',
+            'package/lib/index.d.ts',
+            'package/cordis.patch.yml',
+            'package/scripts/approval-toast.ps1',
+            'package/scripts/approval-uri-handler.ps1',
+            'package/scripts/approval-uri-handler.vbs',
+            'package/scripts/toast.ps1'
+          )
+          $missing = @($required | Where-Object { $entries -notcontains $_ })
+          if ($missing.Count -gt 0) { throw "tarball 缺少：$($missing -join ', ')" }
+          Write-Host "tarball 完整：$tgz（$($entries.Count) 个条目）"
+
+      # gh CLI 在 runner 上预装，省掉一个第三方 action 依赖。
+      # PowerShell 不给原生命令展开通配符，所以先取文件名再传。
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tgz = (Get-ChildItem dsh-approval-center-*.tgz).Name
+          gh release create "${{ github.ref_name }}" "$tgz" --generate-notes
+
+      # ---- 将来注册成功 npm 账号后，取消注释并把 NPM_TOKEN 放进仓库 secrets ----
+      # 注意 pnpm 11 的 publish 已是原生实现，OTP 环境变量是 PNPM_CONFIG_OTP
+      # （不再是 NPM_CONFIG_OTP）。另外 pnpm 11 的 minimumReleaseAge 默认 1440 分钟，
+      # 发布后当天别人是装不上的，需要把本包加进 minimumReleaseAgeExclude。
+      # - name: Publish to npm
+      #   run: pnpm publish --access public --no-git-checks
+      #   env:
+      #     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

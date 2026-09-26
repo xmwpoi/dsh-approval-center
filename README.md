@@ -49,53 +49,105 @@ Windows 专用。在多个子代理并行运行时，拦截需要人类审批的
 
 ## 安装
 
-插件未发布 npm，用本地路径安装。三个前提：
+推荐用 DSH 自带的插件管理器。下面三种方式都**不需要**手动 clone 或构建。
 
-1. **`dsh plugin` 的目标由 `$DSH_HOME` 决定**，装错目录会 exit 0 但完全无效；
-2. `dsh plugin` 硬依赖 PATH 上的 `pnpm`（找不到会 exit 127 并提示 `pnpm was not found`）；
-3. **需要 Node ≥ 24**（`node:sqlite` 免 flag）——`package.json` 的 `engines` 只警告不强制。
-
-而且本地路径安装走 pnpm 的 `link:`，DSH 会**直接从源码目录加载**——所以必须先构建：
+### 方式 A：从 GitHub 安装（推荐）
 
 ```powershell
-# 0) 只有开发者需要：改完 src/ 之后重新构建
-#    仓库里已包含编译产物 lib/，普通使用者克隆下来即可用，不需要这一步。
-cd C:\path\to\dsh-approval-center
-npm install
-npm run build
-
-# 1) 确保 PATH 上有 pnpm（`dsh plugin` 硬依赖它）。首选 corepack：
-corepack enable pnpm
-#    若 corepack 不可用，也可以退回 corepack 缓存里的 pnpm.cjs 做离线 shim：
-#      node "%LOCALAPPDATA%\node\corepack\v1\pnpm\<版本>\bin\pnpm.cjs" %*
-#    注意：%APPDATA%\npm 必须在 PATH 上，否则 dsh plugin 依然找不到 pnpm。
-pnpm --version   # 必须打印版本号
-
-# 2) 指向正确的 DSH_HOME，再安装
-$env:DSH_HOME = '<你的 DSH_HOME，例如 D:\dsh-home>'
-node <dsh-cli>\lib\bin.js plugin --profile web add "C:\path\to\dsh-approval-center"
+dsh plugin --profile web add github:xmwpoi/dsh-approval-center
 ```
+
+或在 Web 侧栏 **插件 → 添加插件** 里填同一串。pnpm 会把包拉进 profile 的
+`node_modules` 并自动构建，**装完不需要保留任何源码目录**。
 
 `dsh plugin add` 会自动应用本包的 `cordis.patch.yml`（`dsh.bundle.patch`）并写入
 `dsh.profile.bundles`——**装完不要再手动往 profile 的 cordis.patch.yml 里加
 insert，否则插件会挂载两次**（两个监听器抢同一 waterfall，完成通知还会发两遍）。
 
-核验是否只挂了一次：
+钉住某个 tag 或提交：
 
 ```powershell
-node <dsh-cli>\lib\bin.js --profile web --dump-config | Select-String 'dsh-approval-center'
-# 只应出现一次
+dsh plugin --profile web add github:xmwpoi/dsh-approval-center#v0.3.0
 ```
 
-手动挂载（不经 CLI）：把本包 `cordis.patch.yml` 里的 insert 复制进目标 profile
-的 `cordis.patch.yml` 即可。**装完必须重启 `dsh web`**——`patchReload` 在当前 DSH
-构建里没有任何代码读取，`dsh.profile.bundles` 只在启动时组合一次。
+### 方式 B：从 Release 压缩包安装
+
+没有 git、或连不上 `github.com` 时用这条。压缩包已含 `lib/`，**不跑任何构建脚本**：
+
+```powershell
+dsh plugin --profile web add https://github.com/xmwpoi/dsh-approval-center/releases/download/v0.3.0/dsh-approval-center-0.3.0.tgz
+```
+
+### 方式 C：源码目录（**仅开发者**）
+
+改 `src/` 时用这条。代价是 pnpm 用 `link:` 直接从源码目录加载，
+**必须先手动构建，而且装完不能移动或删除该目录**：
+
+```powershell
+git clone https://github.com/xmwpoi/dsh-approval-center
+cd dsh-approval-center
+npm install && npm run build     # 见下面两条说明
+
+# 只在有多个 DSH_HOME 时才需要显式指定；装错目录会 exit 0 但完全无效
+$env:DSH_HOME = '<你的 DSH_HOME，例如 D:\dsh-home>'
+dsh plugin --profile web add "C:\path\to\dsh-approval-center"
+```
+
+> **`link:` 依赖不走 `prepare`**：pnpm 对本地目录依赖既不安装 devDependencies、
+> 也不运行 `prepare`，所以 `npm install && npm run build` 必须由你手动做一次。
+> 不改 `src/` 的话可以跳过构建——仓库里已提交编译产物 `lib/`。
+
+> **`.npmrc` 里的 `omit=peer` 只对 npm 生效**。pnpm 11 起 `.npmrc` 只读认证与注册源
+> 设置，所以用 pnpm 时必须依赖仓库里的 `pnpm-workspace.yaml`（`autoInstallPeers: false`），
+> 否则 pnpm 会去补齐 peer `@deepseek-ai/dsh`，把整套 DSH 依赖树（140+ 个包 / ~476 MB）
+> 拖进 `node_modules`。
+
+### 前提与排错
+
+- **Node ≥ 24**（`node:sqlite` 免 flag）。`package.json` 的 `engines` 只警告不强制。
+- `dsh plugin` 硬依赖 PATH 上的 `pnpm`（找不到会 exit 127 并提示 `pnpm was not found`）。
+- **装错目录会 exit 0 但完全无效**——`dsh plugin` 的目标由 `$DSH_HOME` 决定。
+  默认安装不用设它；只有在你有多个 DSH_HOME 时才需要显式指定。
+- **本机没有 `dsh` 命令时**（源码 checkout 的开发机），把 `dsh plugin ...` 换成
+  `node <dsh-cli>\lib\bin.js plugin ...`，把 `dsh --profile ... --dump-config` 换成
+  `node <dsh-cli>\lib\bin.js --profile ... --dump-config`。
+- 方式 A 安装时 pnpm 可能拦下本包的构建脚本（`prepare`）。DSH 会列出待批准的包并提供
+  **允许这些脚本并重试**——照做即可，那不是出错。
+
+装 pnpm（首选 corepack）：
+
+```powershell
+corepack enable pnpm
+# corepack 不可用时，可退回缓存里的 pnpm.cjs 做离线 shim：
+#   node "%LOCALAPPDATA%\node\corepack\v1\pnpm\<版本>\bin\pnpm.cjs" %*
+# 注意：%APPDATA%\npm 必须在 PATH 上，否则 dsh plugin 依然找不到 pnpm。
+pnpm --version   # 必须打印版本号
+```
+
+### 装完需要重启 `dsh web`（除非 profile 开了 HMR）
+
+`dsh.profile.bundles` 只在启动时组合一次；profile 没开 HMR 时配置变化要重启才生效
+（开了 HMR 才会热重组）。`patchReload` 在当前 DSH 构建里没有任何代码读取。
 
 > ⚠ **重启前必须先结束宿主进程**：如果启动器（例如本机的
 > `start-dsh-web.ps1`）在"端口已被占用"时只是打开浏览器然后退出，你会以为重启了、
 > 其实旧进程还在跑旧代码。
 
-> 插件目录被 `link:` 引用，**装完不要移动或删除**它。
+### 手动挂载（不经 CLI）
+
+把本包 `cordis.patch.yml` 里的 insert 复制进目标 profile 的 `cordis.patch.yml` 即可。
+
+### 核验与卸载
+
+```powershell
+dsh --profile web --dump-config | Select-String 'dsh-approval-center'
+# 只应出现一次
+```
+
+卸载：Web 侧栏 **插件 → dsh-approval-center → 卸载**。
+
+> 首次运行注册的 URI 方案（HKCU `dshapproval`）与 AUMID 不会随卸载自动移除——
+> 它们只在 Windows 唤起审批按钮时被用到，留着不影响其他功能。
 
 ## 配置
 

@@ -1,0 +1,9 @@
+# pnpm 11 起 `.npmrc` 只读认证与注册源设置，本仓库 `.npmrc` 里的 `omit=peer`
+# 对 pnpm 已完全失效（`omit` 甚至不在 pnpm 的设置表里，对应项是 autoInstallPeers）。
+#
+# 不设这一条，pnpm 会去补齐 peer `@deepseek-ai/dsh`，把整套 DSH 依赖树
+# （140+ 个包，实测 ~476 MB）拖进 node_modules —— 运行时并不需要它。
+# npm 侧仍由 `.npmrc` 的 `omit=peer` 兜底。
+packages:
+  - .
+autoInstallPeers: false
