@@ -102,10 +102,12 @@ export function apply(ctx: CordisLikeContext, config: Config): void {
   // 防御：config 未经 schema 处理（tools 缺失）时，不要把 TypeError 抛进 waterfall
   const tools = cfg.tools ?? ['*']
 
-  const queue = new ApprovalQueue<ApprovalRequestEvent, ApprovalOutcome>(
-    (req) => processOne(req),
-    cfg.queueMode ?? 'serial',
-  )
+  const queue = new ApprovalQueue<ApprovalRequestEvent, ApprovalOutcome>({
+    run: (req, signal) => processOne(req, signal),
+    // 排队中/入队前被宿主撤回 → cancelled（不谎报拒绝）；关闭/卸载 → unavailable（fail-closed）
+    onCancel: () => 'cancelled',
+    onClose: () => 'unavailable',
+  }, cfg.queueMode ?? 'serial')
 
   // 出厂脚本必须可用：脚本缺失或语法错误时 PowerShell 以 exit 1 退出，而 exit 1 的语义
   // 是"用户点了拒绝"——那会把打包事故谎报成人类决策（详见 dialog.ts 的说明）。
@@ -115,7 +117,7 @@ export function apply(ctx: CordisLikeContext, config: Config): void {
   }
   assertScriptsUsable(needed)
 
-  async function processOne(req: ApprovalRequestEvent): Promise<ApprovalOutcome> {
+  async function processOne(req: ApprovalRequestEvent, signal?: AbortSignal): Promise<ApprovalOutcome> {
     const requestId = randomUUID()
     const agentId = agentIdOf(req)
     getStore().insert({
@@ -138,7 +140,8 @@ export function apply(ctx: CordisLikeContext, config: Config): void {
       ].filter(Boolean).join('\n'),
       timeoutSec,
       timeoutAction,
-      signal: req.signal,
+      // 队列传入的组合 signal：宿主撤回与插件关闭都会触发
+      signal,
     }
     let outcome: DialogOutcome
     try {
@@ -178,7 +181,7 @@ export function apply(ctx: CordisLikeContext, config: Config): void {
   // dsh-api-remotes（Web UI 审批应答者）之后，浏览器在线时请求会被 Web UI 抢走。
   ctx.on('approval/request', (req: ApprovalRequestEvent, next: () => Promise<ApprovalOutcome>) => {
     if (!matchTool(tools, req.toolName)) return next()
-    return queue.submit(req)
+    return queue.submit(req, req.signal)
   }, { prepend: true })
 
   if (cfg.notifyOnSubagentEnd) {
@@ -193,6 +196,12 @@ export function apply(ctx: CordisLikeContext, config: Config): void {
     })
   }
 
-  // cordis 没有 'dispose' 事件；用 effect 的清理函数在宿主重载/退出时关闭 DB 句柄
-  ctx.effect(() => () => { store?.close() })
+  // cordis 没有 'dispose' 事件；用 effect 的清理函数在宿主重载/退出时收尾。
+  // cordis 的 _unload 会 await 异步 cleanup（contract-017.md §2.4），因此这里可以
+  // 等待队列结算：close() 结算排队项为 unavailable、中止活动 worker 的组合 signal、
+  // 等它们落完审计，最后才关 DB——旧请求不会再写已关闭的句柄。
+  ctx.effect(() => async () => {
+    await queue.close()
+    store?.close()
+  })
 }
