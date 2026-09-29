@@ -39,7 +39,16 @@ param(
     # -Title/-Message/-TimeoutSec/-TimeoutAction。风险见下面 $ClearAllNotifications 分支。
     [switch]$ClearAllNotifications,
     # 只与 -ClearAllNotifications 搭配：存在存活审批（<id>.pending）时也强制执行。
-    [switch]$Force
+    [switch]$Force,
+    # 审批内部 token（T0 契约 §4.3）：由 Node 生成并传入，用作通知 tag 与状态文件名，
+    # 使取消/强杀后的定向清理（-CleanupToken）成为可能。缺省走旧随机 GUID 路径
+    # （手动脚本兼容）。须为 1-64 位 hex；非法直接 exit 4，绝不静默换 GUID——
+    # 那会让后续定向清理找不到目标。
+    [string]$RequestToken = '',
+    # 维护入口：按 token 定向清理一次审批的残留（通知按 tag 3 参 Remove、
+    # .pending/.result/.dir 状态文件按映射反查）。幂等可重复；绝不 History.Clear。
+    # 与 -ClearAllNotifications 的区别：那条是"按应用全清"（会伤及存活审批），这条只动自己。
+    [string]$CleanupToken = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -187,6 +196,40 @@ if ($ClearAllNotifications) {
     exit $script:exitCode
 }
 
+# ---------------------------------------------------------------------------
+# 维护入口：-CleanupToken <token>
+#
+# 按 token 定向清理（T0 契约 §4.3）：强杀/取消路径上 PowerShell 的 finally 不保证
+# 执行，残留的 .pending 与 reminder 通知由此回收。只动这个 token 自己的资源：
+#   * 通知：3 参 History.Remove(tag, group, appId)——tag 不存在时静默返回（见文件头
+#     实测表），所以"本来就没有残留"也是成功；绝不 History.Clear、不碰其他组/其他审批。
+#   * 状态文件：.pending/.result 按映射反查（私有 -StateDir 的标记在私有目录），
+#     默认目录与映射目录两处都清；.dir 映射本身也删。
+# 幂等：重复调用、目标不存在一律 exit 0。token 格式非法 exit 4（调用方 bug，要可见）。
+# 退出码不属于审批契约（0=清理完成/无残留，4=清理失败）。
+# ---------------------------------------------------------------------------
+if ($CleanupToken) {
+    if ($CleanupToken -notmatch '^[0-9a-fA-F]{1,64}$') {
+        Write-Output ('CLEANUP FAILED: invalid token format (expected 1-64 hex chars)')
+        exit 4
+    }
+    try {
+        $markerDir = Get-MarkerDir $CleanupToken
+        foreach ($d in @($markerDir, $defaultStateDir) | Select-Object -Unique) {
+            Remove-Item (Join-Path $d ($CleanupToken + '.pending')) -Force -ErrorAction SilentlyContinue
+            Remove-Item (Join-Path $d ($CleanupToken + '.result')) -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item (Join-Path $defaultStateDir ($CleanupToken + '.dir')) -Force -ErrorAction SilentlyContinue
+        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+        [Windows.UI.Notifications.ToastNotificationManager]::History.Remove($CleanupToken, $group, $appId)
+        Write-Output ('CLEANED token=' + $CleanupToken)
+        exit 0
+    } catch {
+        Write-Output ('CLEANUP FAILED: ' + (Format-Exception $_))
+        exit 4
+    }
+}
+
 function Register-UriScheme {
     $root = "HKCU:\Software\Classes\$scheme"
     $cmdKey = "$root\shell\open\command"
@@ -241,7 +284,18 @@ try {
     }
     try { Ensure-AppId } catch { }
 
-    $id = [guid]::NewGuid().ToString('N')
+    # T0 契约 §4.3：Node 传入 -RequestToken 时以它作通知 tag 与状态文件名，
+    # 定向清理（-CleanupToken）据此找到目标。格式非法直接 exit 4（fail-closed），
+    # 绝不静默换随机 GUID——那会让清理永远找不到这条审批的残留。
+    if ($RequestToken) {
+        if ($RequestToken -notmatch '^[0-9a-fA-F]{1,64}$') {
+            Write-DebugLog ('invalid RequestToken format: ' + $RequestToken)
+            exit 4
+        }
+        $id = $RequestToken
+    } else {
+        $id = [guid]::NewGuid().ToString('N')
+    }
     $resultFile = Join-Path $StateDir ($id + '.result')
     $pendingFile = Join-Path $StateDir ($id + '.pending')
     Remove-Item $resultFile -Force -ErrorAction SilentlyContinue

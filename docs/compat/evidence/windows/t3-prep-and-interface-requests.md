@@ -95,8 +95,28 @@ export function cleanupApprovalNotification(token: string, stateDir?: string): v
 
 - `pnpm typecheck`（tsc --noEmit）：**PASS**
 - `pnpm build`：**PASS**
-- `node --test test/dialog.test.js test/dialog.scripts.test.js`：**20/20 PASS**
-  - D-01…D-11 全过（退出码映射、fail-closed、spawn 异常、abort 三态、看门狗 fake-clock、20 并发、监听不泄漏）
-  - S-01…S-04 全过（真实脚本 BOM/ASCII、负例夹具、PS 5.1 Parser 对真实脚本及中文+空格路径解析通过）
-- 实机项（R-01/R-02、V01–V20 实机部分）：**未执行**，等待 T0/T5。
+- `node --test test/dialog.test.js test/dialog.scripts.test.js test/dialog.cleanup.test.js test/dialog.uri-handler.test.js`：**43/43 PASS**
+  - D-01…D-18：退出码映射、fail-closed、spawn 异常、abort/cancel/watchdog 三态、结算幂等、20 并发、监听不泄漏、
+    requestToken 传参与校验（非法 token fail-closed 不 spawn）、cancel() 幂等、清理进程按 token 拉起
+  - S-01…S-04：真实脚本 BOM/ASCII、负例夹具、PS 5.1 Parser 对真实脚本及中文+空格路径解析通过
+  - CL-01…CL-04：-CleanupToken 真实执行——状态文件定向删除、幂等 exit 0、非法 token exit 4、不误删他人文件
+    （注：首跑曾以 exit 4 拒绝测试 token `c1e4n6f8a0b2`——它含字母 n 不是 hex，脚本的 fail-closed 校验正确工作，属测试数据错误）
+  - U-vbs/01…06、U-ps/01…06：两个 URI 处理器在沙箱化 LOCALAPPDATA 下真实执行——
+    approve/reject 回写、路径穿越/非 hex id 拒写、非法 decision 拒写、合法映射定向写入、相对路径映射回落默认目录
+- 实机项（V01–V20 实机部分）：**未执行**，等待 T5。
+
+## 7. T0 契约实现情况（§4.3，2026-09-29 第二阶段）
+
+| 冻结项 | 状态 |
+|---|---|
+| `DialogRequest.requestToken?: string` | 已实现：非法 token fail-closed unavailable（不 spawn）；空串=缺省兼容路径 |
+| `DialogHandle.cancel()` | 已实现：kill + settle('cancelled') + 按 token 定向清理；幂等 |
+| `cleanupRequest(token): void` | 已实现：fire-and-forget，非法 token 跳过并告警；deps 作为可选第 2 参（仅测试注入用，生产不传） |
+| PS1 `-RequestToken` | 已实现：作 tag/状态文件名；格式非法 exit 4，绝不静默换 GUID |
+| PS1 定向清理入口 | 已实现为 `-CleanupToken <token>`（维护路径，与 -ClearAllNotifications 同级；3 参 Remove + 映射反查文件清理，幂等） |
+| watchdog 强杀后清理 | 已实现：abort/cancel/watchdog 三条 kill 路径均触发 cleanupSelf；正常退出与 error 不触发 |
+| 退出码 0/1/2/3/4、watchdog+15s、BOM/ASCII 门禁、mapExitCode | 未动（契约不变项） |
+
+给 A 的接线提示：`cleanupRequest` 与 `showApprovalToast` 均接受可选 deps（测试注入）；index.ts 无需改动即可用新签名（全部可选）。
+
 

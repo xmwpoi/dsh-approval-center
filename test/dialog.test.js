@@ -4,7 +4,7 @@
 // 运行：node --test test/dialog.test.js
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { showApprovalToast } from '../lib/dialog.js'
+import { showApprovalToast, cleanupRequest } from '../lib/dialog.js'
 
 /**
  * 可编程 fake child：测试用例通过 pending 的 emit 句柄在任意时刻
@@ -71,12 +71,13 @@ function makeDeps({ timeoutSec = 30, timeoutAction } = {}) {
   const f = fakeSpawnFactory()
   const c = fakeClockFactory()
   const deps = { spawn: f.spawn, setTimer: c.setTimer, clearTimer: c.clearTimer }
-  const request = (signal) => ({
+  const request = (signal, token) => ({
     title: 't',
     message: 'm',
     timeoutSec,
     timeoutAction,
     signal,
+    ...(token ? { requestToken: token } : {}),
   })
   return { deps, children: f.children, clock: c, request }
 }
@@ -218,4 +219,92 @@ test('D-11: abort 监听在结算后被移除（不泄漏）', async () => {
   // 通过 signal 的 listener 计数验证（Node 24 支持 getEventListeners）。
   const { getEventListeners } = await import('node:events')
   assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+})
+
+// ---------------------------------------------------------------------------
+// T0 契约 §4.3：requestToken / cancel() / cleanupRequest
+// ---------------------------------------------------------------------------
+
+const TOKEN = 'a1b2c3d4e5f6'
+
+test('D-12: cancel() → kill + settled cancelled + 按 token 定向清理；-RequestToken 传入脚本', async () => {
+  const { deps, children, request } = makeDeps()
+  const { promise, cancel } = showApprovalToast(request(null, TOKEN), deps)
+  // -RequestToken 必须出现在审批脚本的参数里
+  assert.ok(children[0].args.includes('-RequestToken'))
+  assert.ok(children[0].args.includes(TOKEN))
+  cancel()
+  assert.equal(await promise, 'cancelled')
+  assert.equal(children[0].killCount, 1)
+  // 清理进程被拉起，且带 -CleanupToken <token>
+  assert.equal(children.length, 2)
+  assert.ok(children[1].args.includes('-CleanupToken'))
+  assert.ok(children[1].args.includes(TOKEN))
+})
+
+test('D-13: 展示中 abort（带 token）→ 定向清理被触发', async () => {
+  const { deps, children, request } = makeDeps()
+  const controller = new AbortController()
+  const { promise } = showApprovalToast(request(controller.signal, TOKEN), deps)
+  controller.abort()
+  assert.equal(await promise, 'cancelled')
+  assert.equal(children.length, 2)
+  assert.ok(children[1].args.includes('-CleanupToken'))
+})
+
+test('D-14: 看门狗强杀（带 token）→ 定向清理被触发（finally 不保证执行的兜底）', async () => {
+  const { deps, children, clock, request } = makeDeps({ timeoutSec: 10 })
+  const { promise } = showApprovalToast(request(null, TOKEN), deps)
+  clock.advance(10 * 1000 + 15_000)
+  assert.equal(await promise, 'unavailable')
+  assert.equal(children.length, 2)
+  assert.ok(children[1].args.includes('-CleanupToken'))
+})
+
+test('D-15: 正常退出（带 token）→ 不触发清理（脚本 finally 已自清理）', async () => {
+  const { deps, children, request } = makeDeps()
+  const { promise } = showApprovalToast(request(null, TOKEN), deps)
+  children[0].emitExit(0)
+  await promise
+  assert.equal(children.length, 1)
+})
+
+test('D-16: cancel() 幂等——重复调用与结算后调用均 no-op', async () => {
+  const { deps, children, request } = makeDeps()
+  const { promise, cancel } = showApprovalToast(request(null, TOKEN), deps)
+  cancel()
+  cancel() // 重复：settle-once，不再叠加 kill/清理
+  children[0].emitExit(0) // 晚到 exit 不覆盖终态
+  assert.equal(await promise, 'cancelled')
+  cancel() // 已结算：no-op
+  assert.equal(children[0].killCount, 1)
+  assert.equal(children.length, 2) // 只有一次清理进程
+})
+
+test('D-17: requestToken 非法 → unavailable 且完全不 spawn（fail-closed）；空串等价缺省', async () => {
+  for (const bad of ['../evil', 'xyz%', 'a'.repeat(65)]) {
+    const { deps, children, request } = makeDeps()
+    const { promise } = showApprovalToast(request(null, bad), deps)
+    assert.equal(await promise, 'unavailable', `token=${bad}`)
+    assert.equal(children.length, 0, `token=${bad}`)
+  }
+  // 空串走旧随机 GUID 兼容路径：正常 spawn，且不带 -RequestToken
+  const { deps, children, request } = makeDeps()
+  const { promise } = showApprovalToast(request(null, ''), deps)
+  children[0].emitExit(0)
+  assert.equal(await promise, 'allowed-once')
+  assert.ok(!children[0].args.includes('-RequestToken'))
+})
+
+test('D-18: cleanupRequest 直接调用——合法 token 拉起清理进程，非法 token 不 spawn', async () => {
+  const f = fakeSpawnFactory()
+  const deps = { spawn: f.spawn }
+  cleanupRequest(TOKEN, deps)
+  assert.equal(f.children.length, 1)
+  assert.ok(f.children[0].args.includes('-CleanupToken'))
+  assert.ok(f.children[0].args.includes(TOKEN))
+  for (const bad of ['../evil', 'ZZZZ', `${'a'.repeat(65)}`]) {
+    cleanupRequest(bad, deps)
+  }
+  assert.equal(f.children.length, 1) // 非法 token 全部被挡下
 })
