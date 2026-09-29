@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from 'schemastery'
 import { ApprovalQueue } from './queue.js'
-import { ApprovalStore, type ApprovalStatus } from './store.js'
+import { ApprovalStore } from './store.js'
 import {
   APPROVAL_TOAST_SCRIPT,
   APPROVAL_URI_HANDLER_SCRIPT,
@@ -12,8 +12,20 @@ import {
   assertScriptsUsable,
   showApprovalToast,
   showToast,
-  type DialogOutcome,
 } from './dialog.js'
+import {
+  HOST_OUTCOME,
+  RESULT_LABEL,
+  STORE_STATUS,
+  agentIdOf,
+  matchTool,
+  selectDisplayReason,
+  subagentEndLabel,
+  type ApprovalOutcome,
+  type ApprovalRequestEvent,
+  type DialogOutcome,
+  type SubagentRunEndInfo,
+} from './host-contract.js'
 
 export const name = 'dsh-approval-center'
 
@@ -47,89 +59,24 @@ export interface Config {
   dataDir: string
 }
 
-/** 与 @deepseek-ai/dsh-user-approval 的公开契约对齐的最小类型，避免编译期耦合 */
-interface ApprovalRequestEvent {
-  readonly agent: { id?: string; session?: { id?: string } }
-  readonly toolName: string
-  readonly callId?: string
-  readonly reason?: string
-  readonly signal?: AbortSignal
-}
-
-type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
-
-interface SubagentRunEndInfo {
-  readonly runId: string
-  readonly provider: string
-  readonly id: string
-  readonly stopReason?: string
-}
-
 /** apply 实际用到的最小 cordis 上下文面（导出以便类型消费者命名） */
 export interface CordisLikeContext {
   on(event: string, listener: (...args: never[]) => unknown, options?: unknown): unknown
   effect(setup: () => unknown): unknown
 }
 
-function matchTool(patterns: string[], toolName: string): boolean {
-  return patterns.some((p) => {
-    if (p === '*') return true
-    if (p.endsWith('*')) return toolName.startsWith(p.slice(0, -1))
-    return p === toolName
-  })
-}
-
-function agentIdOf(req: ApprovalRequestEvent): string {
-  // wire-safe 的 Agent 契约只保证 `id`（dsh-agent/lib/types/types.d.ts）；
-  // `session` 来自运行时增强，所以优先用必然存在的 id。
-  return req.agent?.id ?? req.agent?.session?.id ?? 'unknown'
-}
-
 function shortId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id
 }
 
-/** 数据目录跟随 DSH_HOME，与 dsh 自身的 home 解析保持一致 */
+/**
+ * 数据目录跟随 DSH_HOME，与 dsh 自身的 home 解析保持一致
+ */
 function defaultDataDir(): string {
   // 与 @deepseek-ai/dsh-home-paths 对齐：纯空白的 DSH_HOME 视为未设置，
   // 否则 ' ' 会被当成相对路径，在 CWD 下建出库来
   const dshHome = (process.env.DSH_HOME ?? '').trim() || join(homedir(), '.dsh')
   return join(dshHome, 'approval-center')
-}
-
-/**
- * 弹窗内部结果 → 上报 harness 的结果（语义对照 dsh-user-approval types.d.ts 核验）：
- * - timeout/dismissed：未产生人类决策 → 'unavailable'（fail-closed，与内置 UI
- *   应答者超时归一行为一致），绝不把"没人应答"谎报成"用户拒绝"；
- * - 'cancelled' 专指请求方主动撤回（AbortSignal），不得用于超时。
- */
-const HOST_OUTCOME: Record<DialogOutcome, ApprovalOutcome> = {
-  'allowed-once': 'allowed-once',
-  'rejected': 'rejected',
-  'timeout': 'unavailable',
-  'dismissed': 'unavailable',
-  'cancelled': 'cancelled',
-  'unavailable': 'unavailable',
-}
-
-/** 弹窗内部结果 → 审计库状态（保留精确语义，供事后区分"用户拒绝"与"无人应答"） */
-const STORE_STATUS: Record<DialogOutcome, ApprovalStatus> = {
-  'allowed-once': 'approved',
-  'rejected': 'rejected',
-  'timeout': 'timeout',
-  'dismissed': 'dismissed',
-  'cancelled': 'cancelled',
-  'unavailable': 'unavailable',
-}
-
-/** 弹窗内部结果 → 通知中心回执文案（与审计语义一致，不谎报"用户拒绝"） */
-const RESULT_LABEL: Record<DialogOutcome, string> = {
-  'allowed-once': '已批准',
-  'rejected': '已拒绝',
-  'timeout': '超时无人应答（已自动拒绝）',
-  'dismissed': '弹窗被关闭（已按拒绝处理）',
-  'cancelled': '请求方已取消',
-  'unavailable': '审批渠道不可用（fail-closed，已按拒绝处理）',
 }
 
 export function apply(ctx: CordisLikeContext, config: Config): void {
@@ -175,17 +122,19 @@ export function apply(ctx: CordisLikeContext, config: Config): void {
       requestId,
       agentId,
       toolName: req.toolName,
+      // 审计始终保存宿主原始 reason；displayReason 只进展示层（contract-017.md §2.2）
       reason: req.reason ?? '',
       createdAt: new Date().toISOString(),
       status: 'pending',
     })
 
+    const displayReason = selectDisplayReason(req)
     const dialogReq = {
       title: `审批请求 · ${req.toolName}`,
       message: [
         `代理: ${shortId(agentId)}`,
         `操作: ${req.toolName}`,
-        req.reason ? `原因: ${req.reason}` : '',
+        displayReason ? `原因: ${displayReason}` : '',
       ].filter(Boolean).join('\n'),
       timeoutSec,
       timeoutAction,
@@ -234,7 +183,7 @@ export function apply(ctx: CordisLikeContext, config: Config): void {
 
   if (cfg.notifyOnSubagentEnd) {
     ctx.on('subagent/end', (info: SubagentRunEndInfo) => {
-      showToast('任务完成', `子代理 ${info.provider}/${shortId(info.id)} 已完成，请查看结果`)
+      showToast(`子代理${subagentEndLabel(info.stopReason)}`, `${info.provider}/${shortId(info.id)} 请查看结果`)
     })
   }
 
