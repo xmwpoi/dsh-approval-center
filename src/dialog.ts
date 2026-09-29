@@ -32,8 +32,8 @@ export const RESULT_TOAST_SCRIPT = 'toast.ps1'
 const isPowerShellScript = (path: string): boolean => path.toLowerCase().endsWith('.ps1')
 const isVbsScript = (path: string): boolean => path.toLowerCase().endsWith('.vbs')
 
-export function assertScriptsUsable(files: readonly string[]): void {
-  const paths = files.map((file) => join(SCRIPTS_DIR, file))
+export function assertScriptsUsable(files: readonly string[], baseDir: string = SCRIPTS_DIR): void {
+  const paths = files.map((file) => join(baseDir, file))
 
   for (const path of paths) {
     let bytes: Buffer
@@ -149,6 +149,21 @@ export interface DialogHandle {
   promise: Promise<DialogOutcome>
 }
 
+/**
+ * 可注入的进程/时钟边界（仅供自动化测试；T3 计划 §3.3 的 mock 测试依赖它）。
+ * 生产路径不传 deps，走真实 spawn 与 setTimeout，行为与基线完全一致。
+ * 结构化最小接口：真实 ChildProcess / spawn 天然满足，mock 也无需模拟完整类型。
+ */
+export interface DialogDeps {
+  spawn?: (file: string, args: readonly string[], options: { windowsHide: boolean; stdio: 'ignore' }) => {
+    on(event: 'error', listener: (error: Error) => void): unknown
+    on(event: 'exit', listener: (code: number | null) => void): unknown
+    kill(): unknown
+  }
+  setTimer?: (fn: () => void, ms: number) => unknown
+  clearTimer?: (handle: unknown) => void
+}
+
 function mapExitCode(code: number | null): DialogOutcome {
   switch (code) {
     case 0: return 'allowed-once'
@@ -172,7 +187,10 @@ function mapExitCode(code: number | null): DialogOutcome {
  *
  * 退出码契约见 scripts/approval-toast.ps1：0=批准 1=拒绝 2=超时 3=结果异常 4=投递故障。
  */
-export function showApprovalToast(req: DialogRequest): DialogHandle {
+export function showApprovalToast(req: DialogRequest, deps: DialogDeps = {}): DialogHandle {
+  const spawnImpl = deps.spawn ?? spawn
+  const setTimerImpl = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
+  const clearTimerImpl = deps.clearTimer ?? ((handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>))
   const promise = new Promise<DialogOutcome>((resolve) => {
     // 已中止的请求不该再拉起进程：必须在 spawn 之前判定
     if (req.signal?.aborted) {
@@ -188,9 +206,9 @@ export function showApprovalToast(req: DialogRequest): DialogHandle {
       resolve(outcome)
     }
 
-    let child: ChildProcess
+    let child: ReturnType<NonNullable<DialogDeps['spawn']>>
     try {
-      child = spawn('powershell.exe', [
+      child = spawnImpl('powershell.exe', [
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
         '-File', join(SCRIPTS_DIR, APPROVAL_TOAST_SCRIPT),
         '-Title', req.title,
@@ -214,7 +232,7 @@ export function showApprovalToast(req: DialogRequest): DialogHandle {
 
     // 看门狗：脚本自身的 -TimeoutSec 管不到"进程卡住不退出"。超时不再多等，
     // 强杀并按基础设施故障 fail-closed，避免 promise 永不 settle。
-    const watchdog = setTimeout(() => {
+    const watchdog = setTimerImpl(() => {
       req.signal?.removeEventListener('abort', onAbort)
       // 无论是否已结算都要强杀：杀掉卡死的子进程本身就是必要的副作用。
       // 但已结算时（例如 abort 已 resolve 'cancelled'）不再告警——那条
@@ -226,16 +244,16 @@ export function showApprovalToast(req: DialogRequest): DialogHandle {
       settle('unavailable')
     }, req.timeoutSec * 1000 + 15_000)
 
-    child.on('error', (error) => {
+    child.on('error', (error: Error) => {
       // 缺 powershell.exe / 被安全软件拦截会走这里：静默 fail-closed 排查时毫无线索
       req.signal?.removeEventListener('abort', onAbort)
-      clearTimeout(watchdog)
+      clearTimerImpl(watchdog)
       console.warn(`[dsh-approval-center] 审批通知进程启动失败: ${String(error)}`)
       settle('unavailable')
     })
-    child.on('exit', (code) => {
+    child.on('exit', (code: number | null) => {
       req.signal?.removeEventListener('abort', onAbort)
-      clearTimeout(watchdog)
+      clearTimerImpl(watchdog)
       settle(mapExitCode(code))
     })
   })
