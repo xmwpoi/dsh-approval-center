@@ -120,6 +120,8 @@ class ApprovalQueue<TReq, TRes> {
 
 约束：serial=FIFO（保持基线 chain 语义）；parallel=信号量背压上限 3；取消排队项**不得**启动 handler、不得占位；close() 重复调用安全；无悬挂 Promise。Windows/Dialog 一概不进队列。
 
+**实现修正（A，2026-09-29，commit 2706621）**：`close()` 内部持有 AbortController，并把该 signal 组合进**活动**条目的 signal——close() 时活动 handler 收到中止信号应尽快结算；`onClose()` 只结算排队项。不如此则 close() 等待活动 worker 与调用方"先 close 再 abort 生命周期"的顺序互相死锁。handler 侧契约：必须响应 signal 或自行最终结算。排队中收到撤回（`onCancel`）与 running 后的撤回（组合 signal）语义分界：entry 一旦转 running，abort 只经组合 signal 传递。
+
 ### 4.3 `src/dialog.ts`（C 独占）
 
 ```ts
@@ -163,13 +165,14 @@ class ApprovalStore {
 
 铁律：只有"真实 timeout + 显式 approve"能自动批准；abort/watchdog/exit/关闭/信号撤回一律不可走 approve 分支。
 
-### 4.6 index.ts 关闭顺序（冻结）
+### 4.6 index.ts 关闭顺序（冻结，实现见 commit 2706621）
 
 1. cordis 卸载：监听器同步注销（§2.4），此后不再有新请求进入队列；
-2. `queue.close()`：排队项按 `onClose()→'unavailable'` 结算，等待活动 worker 结束；
-3. 生命周期 AbortController.abort()：活动 dialog 收组合 signal → 结算 `'cancelled'`（宿主侧因撤回已是 cancelled，见 §2.3）；
-4. store：把仍未终态的 pending settle 为 `'unavailable'`（崩溃/关闭语义）→ `store.close()`（最后一步）；
-5. worker/异步回调此后不得再触碰 store（settle 内部捕获 + 关闭后错误可诊断）。
+2. `queue.close()`：排队项按 `onClose()→'unavailable'` 结算；close 内部 AbortController 中止活动 worker 的组合 signal → 活动 dialog 结算 `'cancelled'`（宿主侧因撤回已是 cancelled，见 §2.3）；close() 等待全部活动 worker 结算完成；
+3. store：活动 worker 结算时已把各自审计行落终态；随后 `store.close()`（最后一步）；
+4. worker/异步回调此后不得再触碰 store（settle 内部捕获 + 关闭后错误可诊断）。
+
+活动条目在关闭阶段的宿主结果：真实用户未决策 → 宿主结果 discarded（宿主已撤回）或 unavailable；审计保留精确状态（cancelled 等），不把插件关闭伪装成用户决策。
 
 ## 5. PASS / PENDING 汇总
 
