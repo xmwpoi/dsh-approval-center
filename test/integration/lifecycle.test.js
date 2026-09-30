@@ -5,9 +5,7 @@
  * mock 组件：仅 powershell.exe 的异步 spawn（见 hooks/spawn-shim.mjs）。
  * 期望语义：docs/compat/contract-017.md §4.5（关闭来源 → 宿主结果映射表）。
  *
- * 已知实现缺口（352b2da，待 A 修复后复跑，详见交接文档）：
- * - unload-cancelled：插件卸载引发的终止当前上报/落审计为 cancelled，契约 §4.5 要求 unavailable；
- * - settle-failure receipt：settle 失败改判 unavailable 后回执文案仍显示"已批准"。
+ * 两条来自 352b2da 的接线回归已修复，本文件保留故障注入断言。
  *
  * 注意：async 函数 return 一个 pending promise 会把 adopt 语义带进 await，
  * helper 一律返回 { pending } 包装对象，避免测试在撤回前就阻塞在审批结算上。
@@ -91,7 +89,7 @@ describe('宿主撤回（req.signal abort）', () => {
 })
 
 describe('插件卸载 / 重载（V14）', () => {
-  test('【契约缺口 unload-cancelled】卸载时有活动请求：宿主结果应为 unavailable（契约 §4.5），req.signal 未撤回', async (t) => {
+  test('卸载时有活动请求：宿主结果为 unavailable（契约 §4.5），req.signal 未撤回', async (t) => {
     const host = await startHostTracked()
     const { pending, before } = await startPendingRequest(host, { toolName: 'pwsh', reason: 'no withdraw here' })
     // req.signal 未提供（未撤回）：下面的终止来自插件卸载
@@ -101,7 +99,6 @@ describe('插件卸载 / 重载（V14）', () => {
 
     const rows = readAuditRows(host.dataDir)
     // 契约 §4.5：插件卸载/关闭 → 宿主 unavailable + 审计 unavailable。
-    // 352b2da 现状：queue.close 的组合 signal 使 dialog 结算 cancelled → 宿主/审计均为 cancelled。
     assert.equal(outcome, 'unavailable', '插件卸载导致的终止不得上报为宿主撤回（cancelled）')
     assert.equal(rows.length, 1)
     assert.equal(rows[0].status, 'unavailable', '审计同样不得记为 cancelled（那是宿主撤回的语义）')
@@ -212,7 +209,7 @@ describe('存储故障注入（V15 自动层）', () => {
     closeTurn(host2.session)
   })
 
-  test('【契约缺口 settle-failure-receipt】settle 失败 + Toast 批准：不放行，文案不得显示已批准', async (t) => {
+  test('settle 失败 + Toast 批准：不放行，文案不得显示已批准', async (t) => {
     const host = await startHostTracked({ config: { notifyOnApprovalResult: true } })
     const { pending, before } = await startPendingRequest(host, { toolName: 'pwsh' })
     // 审批行已 insert；注入"所有 UPDATE 失败"的真实 SQLite 错误路径

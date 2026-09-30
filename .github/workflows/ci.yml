@@ -8,7 +8,7 @@ on:
 # 分层门禁（计划书 §7 / contract-017.md）：
 #   job check        — 构建、类型、单测（mock 层）、脚本字节级编码 + PS5.1 解析
 #   job integration  — 真实宿主 fixture 非交互集成：0.1.7-rc.2 为强制门，
-#                      0.1.5-rc.1 仅回归观察（continue-on-error，不构成支持承诺）
+#                      0.1.5-rc.1 fixture 仅安装校验；回归用例待补。
 #   人工 Toast 测试（test:approval）不入 CI。
 
 jobs:
@@ -56,11 +56,6 @@ jobs:
   integration:
     runs-on: windows-latest
     needs: check
-    env:
-      # B 的集成测试从此处读取已固定版本的宿主 fixture（contract-017.md §1 的
-      # integrity 由 npm 校验；不要用 peer 自动安装，也不要解析移动中的 main）
-      DSH_FIXTURE_017_DIR: ${{ github.workspace }}\.fixture\dsh-0.1.7-rc.2
-      DSH_FIXTURE_015_DIR: ${{ github.workspace }}\.fixture\dsh-0.1.5-rc.1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -68,34 +63,22 @@ jobs:
           node-version: '24'
       - run: npm ci
       - run: npm run build
-      - name: install DSH 0.1.7-rc.2 fixture (mandatory)
+      - name: install exact DSH 0.1.7-rc.2 test fixture (mandatory)
         shell: pwsh
+        working-directory: test/integration
         run: |
-          New-Item -ItemType Directory -Force -Path "$env:DSH_FIXTURE_017_DIR" | Out-Null
-          Push-Location $env:DSH_FIXTURE_017_DIR
-          Set-Content package.json '{}'
-          npm install --no-save --ignore-scripts "@deepseek-ai/dsh@0.1.7-rc.2"
-          if ($LASTEXITCODE -ne 0) { throw "fixture 0.1.7-rc.2 install failed (mandatory gate)" }
-          Pop-Location
-          node -e "const p=require(process.env.DSH_FIXTURE_017_DIR+'/node_modules/@deepseek-ai/dsh/package.json'); if(p.version!=='0.1.7-rc.2') throw new Error('fixture version drift: '+p.version)"
-      - name: install DSH 0.1.5-rc.1 fixture (observation only)
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'target fixture install failed' }
+          node -e "for(const n of ['dsh-llm','dsh-scope','dsh-session','dsh-user-approval']) { const v=require('./node_modules/@deepseek-ai/'+n+'/package.json').version; if(v!=='0.1.7-rc.2') throw new Error(n+' version drift: '+v) }"
+          if ($LASTEXITCODE -ne 0) { throw 'target fixture version drift' }
+      - name: install exact DSH 0.1.5-rc.1 fixture (observation only)
         shell: pwsh
+        working-directory: test/integration/fixture-015
         continue-on-error: true
         run: |
-          New-Item -ItemType Directory -Force -Path "$env:DSH_FIXTURE_015_DIR" | Out-Null
-          Push-Location $env:DSH_FIXTURE_015_DIR
-          Set-Content package.json '{}'
-          npm install --no-save --ignore-scripts "@deepseek-ai/dsh@0.1.5-rc.1"
-          if ($LASTEXITCODE -ne 0) { throw "fixture 0.1.5-rc.1 install failed" }
-          Pop-Location
-          node -e "const p=require(process.env.DSH_FIXTURE_015_DIR+'/node_modules/@deepseek-ai/dsh/package.json'); if(p.version!=='0.1.5-rc.1') throw new Error('fixture version drift: '+p.version)"
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'legacy fixture install failed' }
+          node -e "for(const n of ['dsh-llm','dsh-scope','dsh-session','dsh-user-approval']) { const v=require('./node_modules/@deepseek-ai/'+n+'/package.json').version; if(v!=='0.1.5-rc.1') throw new Error(n+' version drift: '+v) }"
+          if ($LASTEXITCODE -ne 0) { throw 'legacy fixture version drift' }
       # 0.1.7-rc.2 是强制门：失败即红
       - run: npm run test:integration
-        env:
-          DSH_FIXTURE_VERSION: 0.1.7-rc.2
-      # 0.1.5-rc.1 仅回归观察：失败只告警，不构成"正式支持旧版"的证据
-      - name: regression observe (0.1.5-rc.1, non-blocking)
-        run: npm run test:integration
-        env:
-          DSH_FIXTURE_VERSION: 0.1.5-rc.1
-        continue-on-error: true

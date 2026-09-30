@@ -168,11 +168,11 @@ class ApprovalStore {
 ### 4.6 index.ts 关闭顺序（冻结，实现见 commit 2706621）
 
 1. cordis 卸载：监听器同步注销（§2.4），此后不再有新请求进入队列；
-2. `queue.close()`：排队项按 `onClose()→'unavailable'` 结算；close 内部 AbortController 中止活动 worker 的组合 signal → 活动 dialog 结算 `'cancelled'`（宿主侧因撤回已是 cancelled，见 §2.3）；close() 等待全部活动 worker 结算完成；
+2. `queue.close()`：排队项按 `onClose()→'unavailable'` 结算；close 内部 AbortController 中止活动 worker 的组合 signal。活动 dialog 内部的 `cancelled` 经 `effectiveDialogOutcome` 改判为 `unavailable`，审计也记 `unavailable`；close() 等待全部活动 worker 结算完成；
 3. store：活动 worker 结算时已把各自审计行落终态；随后 `store.close()`（最后一步）；
 4. worker/异步回调此后不得再触碰 store（settle 内部捕获 + 关闭后错误可诊断）。
 
-活动条目在关闭阶段的宿主结果：真实用户未决策 → 宿主结果 discarded（宿主已撤回）或 unavailable；审计保留精确状态（cancelled 等），不把插件关闭伪装成用户决策。
+活动条目在关闭阶段的宿主结果：真实用户未决策 → 宿主结果 discarded（宿主已撤回）或 unavailable；插件自身关闭的审计状态为 `unavailable`，宿主主动撤回的审计状态为 `cancelled`。
 
 ## 5. PASS / PENDING 汇总
 
@@ -184,8 +184,8 @@ class ApprovalStore {
 | displayReason 目标版新增 + 回退规则 | PASS（冻结 §2.2） |
 | Cordis prepend / cleanup await 语义 | PASS（§2.4） |
 | subagent/start、/end payload 与 stopReason | PASS（§2.5） |
-| schemastery 3.18 判据与投影 | PASS（实测）；深层 JSON Schema 投影 PENDING → T5/V19 |
-| 真实宿主非交互集成（open turn 审批、Web 共存、重载） | PENDING → T5 |
+| schemastery 3.18 判据与默认值投影 | PASS（实测）；深层 JSON Schema 投影 PENDING（需 dsh-app-boot 完整引导） |
+| 0.1.7-rc.2 真实宿主非交互集成（审批、waterfall 共存、重载） | 本地 21/21 PASS；GitHub Actions 首轮运行 PENDING |
 | Windows 实机全部用例 | PENDING → T6（C 独占） |
 
 ## 6. 给 B/C/D 的开工说明

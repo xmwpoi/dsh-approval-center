@@ -136,8 +136,10 @@ export function approvalResultLabel(
 ): string {
   const autoApproved = outcome === 'timeout' && opts.timeoutAction === 'approve'
   if (opts.settleFailed) {
-    const base = autoApproved ? '超时无人应答（已自动批准）' : RESULT_LABEL[outcome]
-    return `${base}；审计结算失败，已按渠道不可用处理`
+    if (outcome === 'allowed-once' || autoApproved) {
+      return '审计结算失败，已按渠道不可用处理'
+    }
+    return `${RESULT_LABEL[outcome]}；审计结算失败，已按渠道不可用处理`
   }
   return autoApproved ? '超时无人应答（已自动批准）' : RESULT_LABEL[outcome]
 }

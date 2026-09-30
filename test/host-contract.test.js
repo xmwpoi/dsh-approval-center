@@ -132,10 +132,10 @@ test('effectiveDialogOutcome：关闭期其他结果不受影响（真实用户�
 test('approvalResultLabel：审计结算失败后不得展示"已批准"', () => {
   const label = approvalResultLabel('allowed-once', { timeoutAction: 'reject', settleFailed: true })
   assert.match(label, /审计结算失败/)
-  assert.doesNotMatch(label, /^已批准$/)
+  assert.doesNotMatch(label, /已批准/)
   // 超时自动批准路径同样不得在结算失败后展示为已放行
   const label2 = approvalResultLabel('timeout', { timeoutAction: 'approve', settleFailed: true })
-  assert.match(label2, /超时无人应答（已自动批准）/)
+  assert.doesNotMatch(label2, /已自动批准/)
   assert.match(label2, /审计结算失败/)
 })
 

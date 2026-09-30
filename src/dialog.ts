@@ -252,7 +252,10 @@ export function showApprovalToast(req: DialogRequest, deps: DialogDeps = {}): Di
       return
     }
 
+    let watchdog: unknown
     const onAbort = () => {
+      if (settled) return
+      if (watchdog !== undefined) clearTimerImpl(watchdog)
       child.kill()
       settle('cancelled')
       cleanupSelf()
@@ -263,6 +266,7 @@ export function showApprovalToast(req: DialogRequest, deps: DialogDeps = {}): Di
     // 已结算时 no-op，保证幂等。
     requestCancel = () => {
       if (settled) return
+      if (watchdog !== undefined) clearTimerImpl(watchdog)
       child.kill()
       settle('cancelled')
       cleanupSelf()
@@ -270,7 +274,7 @@ export function showApprovalToast(req: DialogRequest, deps: DialogDeps = {}): Di
 
     // 看门狗：脚本自身的 -TimeoutSec 管不到"进程卡住不退出"。超时不再多等，
     // 强杀并按基础设施故障 fail-closed，避免 promise 永不 settle。
-    const watchdog = setTimerImpl(() => {
+    watchdog = setTimerImpl(() => {
       req.signal?.removeEventListener('abort', onAbort)
       // 无论是否已结算都要强杀：杀掉卡死的子进程本身就是必要的副作用。
       // 但已结算时（例如 abort 已 resolve 'cancelled'）不再告警——那条

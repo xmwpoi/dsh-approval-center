@@ -143,12 +143,14 @@ test('D-06: signal 已中止 → cancelled，且完全不 spawn', async () => {
 })
 
 test('D-07: 展示中 abort → kill 被调用、settled 为 cancelled', async () => {
-  const { deps, children, request } = makeDeps()
+  const { deps, children, clock, request } = makeDeps()
   const controller = new AbortController()
   const { promise } = showApprovalToast(request(controller.signal), deps)
   controller.abort()
   assert.equal(await promise, 'cancelled')
   assert.equal(children[0].killCount, 1)
+  clock.advance(60 * 60 * 1000)
+  assert.equal(children[0].killCount, 1, 'abort 应清除看门狗，避免迟到重复 kill 与延迟进程退出')
 })
 
 test('D-08a: abort 后晚到 exit，终态不被覆盖', async () => {
