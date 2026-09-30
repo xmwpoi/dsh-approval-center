@@ -208,6 +208,9 @@ D 的 T-1（断言"冷读应取 seed 标题"）与 T-5（断言"淘汰后冷读�
 |---|---|---|---|---|---|
 | 首轮 | [36745467011](https://github.com/xmwpoi/dsh-approval-center/actions/runs/36745467011) | `717044a` | ❌ | (未运行) | **failure** |
 | 修复后 | [36745878868](https://github.com/xmwpoi/dsh-approval-center/actions/runs/36745878868) | `c90a1a5` | ✅ | ✅ | **success** |
+| 证据文档后 | [36746343677](https://github.com/xmwpoi/dsh-approval-center/actions/runs/36746343677) | `e90ece2` | ✅ | ✅ | **success** |
+
+第三轮只新增 `docs/**`（已核验**未改任何入包文件**），因此候选包 SHA 不变；CI 仍全绿。
 
 修复后 run 的各步骤全部通过，包括本轮新增的
 `assert script encodings, CRLF line endings and PowerShell syntax`（R3 §6 的打包门）
