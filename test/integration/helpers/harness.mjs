@@ -32,6 +32,9 @@ const PLUGIN_LIB_URL = pathToFileURL(process.env.DSH_PLUGIN_ENTRY ?? join(REPO_R
 export class FakeSessionLog {
   #events = []
   constructor({ id = 'agent-fixture', origin } = {}) {
+    // 宿主 Session 上 id 与 header.id 同值（dsh-agent：`agent.id` 即 SessionId）。
+    // 两者都要有：插件读 session.id 定位会话，header 供主/子判据。
+    this.id = id
     this.header = { id, ...(origin !== undefined ? { origin } : {}) }
   }
   get seq() { return this.#events.length }
