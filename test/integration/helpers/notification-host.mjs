@@ -19,6 +19,7 @@ import { after } from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import { SessionStore, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
 import '@deepseek-ai/dsh-session-title'
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url))
@@ -36,9 +37,16 @@ export function trackCleanup(dir) { cleanupDirs.push(dir) }
 /**
  * 组装真实宿主：Context + SessionStore + ApprovalService + 插件 fiber。
  * 返回 createRoot/createChild/forkRoot 与 publish 断言所需的一切。
+ *
+ * `registry` 选项控制宿主 AgentRegistry 的注入形态（契约 §2.6 解析第 2 步）：
+ *   - 'stub'（默认，兼容既有用例）：最小 `{ get }` 替身 —— **不能**证明真实服务注入
+ *   - 'real'：真实 `@deepseek-ai/dsh-agent` AgentRegistry 服务（真实 Cordis 服务注册/依赖注入），
+ *     配合返回的 `registerAgent()` 把已构造 agent 记入真实 store
+ *   - 'none'：完全不注入 agents 服务 —— 触发插件 `safeAgentLookup` 的"服务不可用"路径
  */
 export async function startNotificationHost({
   config = {}, policy = 'ask', dataDir: dataDirOverride, agents = new Map(),
+  registry = 'stub',
 } = {}) {
   const ctx = new Context()
   // 真实 SessionStore：必须在 ctx 上实例化服务，ctx.sessions 才可用
@@ -46,8 +54,14 @@ export async function startNotificationHost({
   const dataDir = dataDirOverride ?? mkdtempSync(join(tmpdir(), `notif-t3-${randomUUID().slice(0, 8)}-`))
   trackCleanup(dataDir)
 
-  // 宿主 AgentRegistry 公开查询面的最小实现（契约 §2.6 解析顺序第 2 步）
-  ctx.agents = { get: (id) => agents.get(id) }
+  // 宿主 AgentRegistry（契约 §2.6 解析顺序第 2 步）
+  let agentRegistry
+  if (registry === 'real') {
+    // 真实服务：真实 Cordis 服务注册与依赖注入，ctx.agents 即 AgentRegistry 实例
+    agentRegistry = new AgentRegistry(ctx)
+  } else if (registry === 'stub') {
+    ctx.agents = { get: (id) => agents.get(id) }
+  } // 'none'：什么都不装，ctx.agents 缺失
 
   const service = new ApprovalService(ctx, { policy })
   const pluginMod = await import(PLUGIN_LIB_URL)
@@ -71,8 +85,10 @@ export async function startNotificationHost({
 
   const unloaded = []
   return {
-    ctx, store, service, fiber, dataDir, cfg,
+    ctx, store, agentRegistry, service, fiber, dataDir, cfg,
     unload: async () => { await fiber.dispose(); unloaded.push(1) },
+    /** 把已构造 agent 记入真实 AgentRegistry（仅 registry='real' 时可用）；须 await 返回的 effect */
+    registerAgent: (agent) => agentRegistry.register(agent),
     /** 根（主）会话 */
     createRoot(id, { title } = {}) {
       const s = ctx.sessions.create(SessionId(id), { meta: { cwd: process.cwd() } })
