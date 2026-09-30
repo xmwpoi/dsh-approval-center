@@ -48,7 +48,11 @@ param(
     # 维护入口：按 token 定向清理一次审批的残留（通知按 tag 3 参 Remove、
     # .pending/.result/.dir 状态文件按映射反查）。幂等可重复；绝不 History.Clear。
     # 与 -ClearAllNotifications 的区别：那条是"按应用全清"（会伤及存活审批），这条只动自己。
-    [string]$CleanupToken = ''
+    [string]$CleanupToken = '',
+    # 维护入口（C 布局补丁）：只构造并 LoadXml 校验卡片 XML，**不注册 URI、不写状态
+    # 文件、不调用 Show()、不弹任何通知**。用于无独占桌面时验证多行布局与转义。
+    # 退出码：0=校验通过，4=校验失败。不属于审批退出码契约（0=批准 1=拒绝…）。
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -270,6 +274,130 @@ function Escape-Xml([string]$s) {
     return $s.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;')
 }
 
+# ---------------------------------------------------------------------------
+# 审批卡片布局（C 布局补丁，纯函数，无副作用）
+#
+# 为什么要多行拆分：
+#   旧实现把多行正文塞进单个 <text> 并用 `n 分隔 —— Windows 不把 `n 当换行渲染，
+#   整段被折成一行连续文字，"任务/操作/原因/选择/等待"糊成一片
+#   （node-notifier#123 记录同一现象）。
+#
+# ToastGeneric 的**文档化**限制（App notification content / AdaptiveText，Win11）：
+#   * 最多 3 个 <text> 元素：1 个标题 + 2 个描述元素；
+#   * 标题最多 2 行，两个描述元素**合计**最多 4 行；
+#   * 超出 maxLines 的内容会被省略号截断。
+#   因此不能靠"无限堆 <text>"来排 5 行正文 —— 第 4 个 <text> 起就是未定义行为。
+#
+# A 现行卡片 = 标题 1 行 + 正文 5 行（任务/操作/原因/选择/等待）= 共 6 行。
+# 描述预算只有 4 行，直接平分会把最后一行（"等待：…超时自动批准"）截掉 —— 绝不允许。
+# 解法：标题预算是 2 行而标题只占 1 行，把**多出的那 1 行正文**挪进标题，
+#       正文剩下 4 行正好填满描述预算，6 行全部可见、零截断。
+#
+# 截断规则（正文行数仍超预算时）：保留**首部**若干行（上下文）+ 显式截断提示 +
+# **最后一行**。最后一行是超时动作（approve 时是"超时自动批准"），绝不隐藏。
+# ---------------------------------------------------------------------------
+$maxTextElements = 3
+$maxTitleLines = 2
+$maxDescLinesTotal = 4
+
+function Build-ApprovalToastXml([string]$Title, [string]$Message, [string]$Id) {
+    $titleLines = @(($Title -split "\r?\n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    if ($titleLines.Count -eq 0) { $titleLines = @('审批请求') }
+    if ($titleLines.Count -gt $maxTitleLines) {
+        # 标题自身超长：预算硬上限 2 行，**不能**追加第 3 行提示（那会超预算，
+        # 第一版就犯了这个错）。改为用提示**替换**第 2 行 —— 既保留首行、又显式示警。
+        $titleLines = @($titleLines[0]) + @('…（标题过长，请在 DSH 查看完整信息）')
+    }
+    $spareTitleLines = $maxTitleLines - $titleLines.Count
+    if ($spareTitleLines -lt 0) { $spareTitleLines = 0 }
+
+    $bodyLines = @(($Message -split "\r?\n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    $bodyBudget = $maxDescLinesTotal + $spareTitleLines
+    if ($bodyLines.Count -gt $bodyBudget) {
+        $keepHead = $bodyBudget - 2
+        if ($keepHead -lt 1) { $keepHead = 1 }
+        $headTop = $keepHead
+        if ($headTop -gt $bodyLines.Count) { $headTop = $bodyLines.Count }
+        $head = @($bodyLines[0..($headTop - 1)])
+        $tail = @($bodyLines[$bodyLines.Count - 1])
+        $bodyLines = @($head) + @('…（内容已截断，请在 DSH 查看完整信息）') + $tail
+    }
+
+    # 把标题富余行数用来吸收正文（A 卡片：标题 1 行 → 吸收 1 行正文）
+    $moveCount = $spareTitleLines
+    if ($moveCount -gt $bodyLines.Count) { $moveCount = $bodyLines.Count }
+    if ($moveCount -gt 0) {
+        $titleLines = @($titleLines) + @($bodyLines[0..($moveCount - 1)])
+        $rest = @($bodyLines | Select-Object -Skip $moveCount)
+    } else {
+        $rest = $bodyLines
+    }
+
+    # 剩余正文平分到 2 个描述 <text>（合计 ≤ 4 行，符合文档化预算）
+    $restCount = $rest.Count
+    $half = [int][Math]::Ceiling($restCount / 2)
+    $desc1Lines = @()
+    $desc2Lines = @()
+    if ($restCount -gt 0) {
+        if ($half -ge $restCount) {
+            $desc1Lines = $rest
+        } else {
+            $desc1Lines = @($rest[0..($half - 1)])
+            $desc2Lines = @($rest[$half..($restCount - 1)])
+        }
+    }
+
+    function Local-EscapeLines([string[]]$lines) {
+        if (@($lines).Count -eq 0) { return $null }
+        return (($lines | ForEach-Object { Escape-Xml $_ }) -join "`n")
+    }
+    $t1 = Escape-Xml ($titleLines -join "`n")
+    $t2 = Local-EscapeLines $desc1Lines
+    $t3 = Local-EscapeLines $desc2Lines
+
+    $textNodes = New-Object System.Collections.Generic.List[string]
+    $textNodes.Add('      <text>' + $t1 + '</text>')
+    if ($null -ne $t2) { $textNodes.Add('      <text>' + $t2 + '</text>') }
+    if ($null -ne $t3) { $textNodes.Add('      <text>' + $t3 + '</text>') }
+    $textBlock = ($textNodes -join [Environment]::NewLine)
+
+    return @"
+<toast scenario="reminder" activationType="protocol">
+  <visual>
+    <binding template="ToastGeneric">
+$textBlock
+    </binding>
+  </visual>
+  <actions>
+    <action content="批准" arguments="$scheme`:approve/$(Escape-Xml $Id)" activationType="protocol" />
+    <action content="拒绝" arguments="$scheme`:reject/$(Escape-Xml $Id)" activationType="protocol" />
+  </actions>
+</toast>
+"@
+}
+
+# ---------------------------------------------------------------------------
+# 维护入口：-ValidateOnly
+# 只构造并校验通知 XML，**不注册 URI、不写状态文件、不调用 Show()、不弹任何通知**。
+# 用途：在没有独占桌面时也能验证卡片布局（多行是否拆进合法的 <text> 结构、转义是否
+# 正确、LoadXml 是否接受）。退出码 0=通过 / 4=失败，不属于审批退出码契约。
+# ---------------------------------------------------------------------------
+if ($ValidateOnly) {
+    try {
+        $xmlText = Build-ApprovalToastXml -Title $Title -Message $Message -Id 'validateonly0000'
+        $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
+        $doc.LoadXml($xmlText)
+        $nodes = $doc.GetElementsByTagName('text')
+        $actions = $doc.GetElementsByTagName('action')
+        Write-Output ("VALIDATE OK: textNodes={0} actionNodes={1}" -f @($nodes).Count, @($actions).Count)
+        foreach ($n in $nodes) { Write-Output ('TEXT> ' + ($n.InnerText -replace "`n", ' | ')) }
+        exit 0
+    } catch {
+        Write-Output ('VALIDATE FAILED: ' + (Format-Exception $_))
+        exit 4
+    }
+}
+
 $resultFile = $null
 $pendingFile = $null
 $mappingFile = $null
@@ -356,20 +484,9 @@ try {
         }
     } catch { Write-DebugLog ('sweep enumeration failed: ' + (Format-Exception $_)) }
 
-    $xmlString = @"
-<toast scenario="reminder" activationType="protocol">
-  <visual>
-    <binding template="ToastGeneric">
-      <text>$(Escape-Xml $Title)</text>
-      <text>$(Escape-Xml $Message)</text>
-    </binding>
-  </visual>
-  <actions>
-    <action content="批准" arguments="$scheme`:approve/$id" activationType="protocol" />
-    <action content="拒绝" arguments="$scheme`:reject/$id" activationType="protocol" />
-  </actions>
-</toast>
-"@
+    # 卡片 XML 由 Build-ApprovalToastXml 统一构造（多行布局与 ToastGeneric 预算见函数注释）。
+    # 传入本次真实 requestToken，协议 URI 的形态与改动前逐字一致。
+    $xmlString = Build-ApprovalToastXml -Title $Title -Message $Message -Id $id
 
     $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
     $xml.LoadXml($xmlString)
