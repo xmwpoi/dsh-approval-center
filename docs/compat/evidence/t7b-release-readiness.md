@@ -11,11 +11,17 @@
 | G0 契约 | PASS | [冻结契约](../contract-017.md)，目标宿主 `0.1.7-rc.2` |
 | G1 当前修复树 | **PASS（远端 CI）** | `637163f`：[第二轮 CI](./ci-first-run.md)安装/typecheck/build、98/98 单测、21/21 目标集成均通过，0 fail/skip。 |
 | G2 Windows 实机 | **当前修复树 PENDING** | [C 的 T6 §7 复测](./windows/t6/T6-results.md)对旧 SHA 通过；现正修改映射协议与处理器，需要 C 按新包重新确认中文+空格 StateDir、VBS 主路、PS 回退、ASCII 与强杀清理。V16 完整真实子代理会话仍 PENDING；V08 仅 5+5 受控批次。 |
-| G3 包完整性 | **当前修复树 PENDING** | 旧包已做 19 条目、精确 peer、隔离安装；脚本变动后须重打包并重新核验。 |
+| G3 包完整性 | **PASS（新包）** | [Unicode 候选记录](./unicode-candidate.md)：19/19 解包=构建树=隔离安装，入口 Config/apply 可加载；此烟测不含完整 CLI/真实通知。 |
 | G4 隔离升级/卸载及恢复 | PASS（限定范围） | T6 S13：隔离插件卸载后配置中 0 实例；生产 0.3.0 保持原状，生产库仅只读打开并确认 33 行；URI/AUMID 逐字恢复。**没有进行生产升级后回装 0.3.0 演练**；D 的 R1–R5 是故障触发时的执行预案，不应标成已执行。 |
 | GitHub Actions | **第二轮 PASS** | [run 36707444272](https://github.com/xmwpoi/dsh-approval-center/actions/runs/36707444272)：两个 job 均 PASS。首轮 95/98 FAIL 保留在历史记录中。 |
 
-## 历史候选与版本（当前修复树尚未重打包）
+## 当前固定候选
+
+- 路径：`D:\codex\dsh-approval-center-unicode-candidate\dsh-approval-center-0.3.1-rc.1.tgz`。
+- SHA256：`7002324BF8B19749BAC058FB18306711FC76F0DB3FE7A6C1EAF4BCEC0F6ACB4A`。
+- 构建 commit：`77cd166a8f42246132effe6222b19ede3b0ef818`，运行修复 `637163f`，目标版精确 `0.1.7-rc.2`。CI/G3 已通过，G2 待 C。
+
+## 历史候选与版本
 
 - 已完成 G1/G2 的候选包：`D:\codex\dsh-approval-center-0.3.1-rc.1-t6-issue1.tgz`。
 - SHA256：`9F13E71BF14F26D9D4840032DA3C5409CBCE43F93CBA47BA0F61B947E25ECFA8`。
@@ -24,7 +30,7 @@
 - 0.1.5-rc.1 的 4 项观察用例是独立回归观察，不构成双版本支持声明。
 - 包内 README/CHANGELOG 已修正并重打包：`D:\codex\dsh-approval-center-t7b-pack\dsh-approval-center-0.3.1-rc.1.tgz`，SHA256 `9E0E858B40EEE86E477EE15CC9F02A3347584AC97D54FB697186FD113B54D255`。与 C 已验收包相比，**只有这两份文档不同，17/17 个运行文件逐字节一致**；见 [比对记录](./t7b-doc-only-repack.md)。C 对新 SHA 的证据适用性复审尚 PENDING。
 
-以上两个 SHA 均**不含正在修复的 UTF-16 LE 映射协议**，不得用作下一轮发布候选。脚本变化使文案更新包的 17/17 等价结论只具历史意义；新包待远端 CI 与实机复测后再固定。
+以上两个 SHA 均**不含最新 UTF-16 LE 映射协议**，不得用作下一轮发布候选。脚本变化使文案更新包的 17/17 等价结论只具历史意义。
 
 ## 发布前剩余步骤
 
