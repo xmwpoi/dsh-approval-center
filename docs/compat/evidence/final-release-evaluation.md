@@ -1,5 +1,7 @@
 # 最终发布评估：dsh-approval-center 0.3.1-rc.1 × DSH 0.1.7-rc.2（Agent A，2026-09-30）
 
+> **发布授权与文档更新后的结论：** 用户已授权完成发布文案后发布预发布版。下文 `7002324B…` 保留为 C 实机签收基线；本次公开附件更新 README/CHANGELOG 后，SHA256 为 `22340c50276672e94a3821079f1521f5f17f88eeeb0af4fcc766fbaf303a3821`。除两份文档外 17/17 文件与验收包逐字节相同，见 [发布包核验](./release-package.md)。原“等待用户决定”是签收时的历史状态；发布流程先 Draft 核附件，再公开 prerelease，生产升级另行安排。
+
 收口对象：Unicode 修复轮候选。本文件是 T7b 终稿，取代 [t7b-release-readiness.md](./t7b-release-readiness.md)（其中旧 SHA `7CE7…`、`9F13…`、`9E0E…` 均已作废，仅作历史记录）。
 
 ## 结论
