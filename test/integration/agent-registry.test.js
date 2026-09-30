@@ -183,6 +183,96 @@ describe('T3-R 真实 AgentRegistry 服务注入（发布阻断项）', () => {
   })
 })
 
+/**
+ * T3-R2 调用层与「缺失服务」访问语义（R3-D 第 2 条）。
+ *
+ * 这里把两类**容易被混淆**的事实分别钉死，避免用"两种实现都能过"的写法掩盖契约：
+ *
+ * (1) **调用层**：本文件 R-1…R-7 用的是 `ctx.waterfall(scopeTarget(...), 'approval/request', req, ...)`
+ *     —— 即**宿主真实的 waterfall 派发形态**（与 `dsh-user-approval/lib/index.js` 的 `decide()` 一致）。
+ *     只有这条路径能让"`req.agent` 仅带 id"抵达插件监听器，从而测试插件的**防御性回退**。
+ *     真实 `ApprovalService.request()` 对 id-only 输入会在**宿主层**先行失败（见 R-9），
+ *     所以 id-only **不是可达的宿主输入**；不得为了它给生产代码加额外依赖。
+ *
+ * (2) **缺失服务时的访问语义依语境而异**（见 R-8）：
+ *     根 context 上读 `ctx.agents` 返回 `undefined`；
+ *     而**插件 fiber 内**（`apply()` 的真实时点）读同一个属性会**抛**
+ *     `cannot get property "agents" without inject`。
+ *     ⇒ A 的 `safeAgentLookup` 注释在**真正重要的语境**下是**正确**的，
+ *       try/catch 也不是冗余。D 在 R2 报告中基于根 context 得出的"不抛"结论**已更正**。
+ */
+describe('T3-R2 调用层与缺失服务访问语义（R3-D 第 2 条）', () => {
+  test('R-8 缺失服务时仍是"依语境"：根 context 返回 undefined，插件 fiber 内抛且被安全兜住', async () => {
+    const { Context } = await import('@deepseek-ai/cordis')
+    const { SessionStore } = await import('@deepseek-ai/dsh-session')
+
+    // ① 根 context（无 fiber）：返回 undefined，不抛
+    const root = new Context()
+    new SessionStore(root)
+    let rootThrew
+    let rootValue
+    try { rootValue = root.agents } catch (e) { rootThrew = String(e.message) }
+    assert.equal(rootThrew, undefined, '根 context 读 ctx.agents 不应抛')
+    assert.equal(rootValue, undefined, '根 context 无服务时应为 undefined')
+
+    // ② 插件 fiber 内（apply 的真实时点）：抛 —— 这正是 safeAgentLookup 必须 try/catch 的原因
+    const ctx2 = new Context()
+    new SessionStore(ctx2)
+    let fiberThrew
+    const fiber = ctx2.plugin((inner) => {
+      try { void inner.agents } catch (e) { fiberThrew = String(e.message) }
+    })
+    await fiber
+    assert.ok(
+      typeof fiberThrew === 'string' && fiberThrew.includes('agents'),
+      `插件 fiber 内读缺失服务应抛（A 的注释正确），实测 ${String(fiberThrew)}`,
+    )
+    await fiber.dispose()
+
+    // ③ 端到端：服务缺失时插件必须照常挂载并安全转交（不因缺服务拒载）
+    const host = await startNotificationHost({ registry: 'none' })
+    assert.equal(host.agentRegistry, undefined)
+    const before = spawned().length
+    const s = host.createRoot('r8-main')
+    s.append('turn/start', { turn: 1 })
+    const outcome = await requestById(host, s.id)
+    assert.equal(outcome, 'unavailable', '服务缺失 → 身份不可确认 → 不认领 → 宿主兜底')
+    assert.equal(spawned().length, before, '服务缺失不得弹窗')
+    assert.equal(readAuditRows(host.dataDir).length, 0, '服务缺失不得写审计')
+    closeTurnOf(s)
+    await host.unload()
+  })
+
+  test('R-9 调用层区分：真实 ApprovalService 对 id-only 在宿主层先抛，故 id-only 非可达宿主输入', async () => {
+    const { ApprovalService: Svc } = await import('@deepseek-ai/dsh-user-approval')
+    const { Context } = await import('@deepseek-ai/cordis')
+    const { SessionStore } = await import('@deepseek-ai/dsh-session')
+    const AgentRegistryMod = (await import('@deepseek-ai/dsh-agent')).default
+
+    const ctx = new Context()
+    new SessionStore(ctx)
+    new AgentRegistryMod(ctx)
+    const svc = new Svc(ctx, { policy: 'ask' })
+    const s = ctx.sessions.create(SessionId('r9-main'), { meta: { cwd: process.cwd() } })
+    s.append('turn/start', { turn: 1 })
+
+    // ① id-only：宿主自己在 open-turn 前置检查就抛（agent.session 缺失）
+    let hostThrew
+    try {
+      await svc.request({ agent: { id: s.id }, toolName: 'pwsh', reason: 'x' })
+    } catch (e) { hostThrew = String(e.message) }
+    assert.ok(
+      typeof hostThrew === 'string',
+      `真实 ApprovalService 对 id-only 应在宿主层先失败（契约§2.6 前置），实测 ${String(hostThrew)}`,
+    )
+
+    // ② 带 session：正常进入应答者链（无应答者 → fail-closed 'unavailable'）
+    const outcome = await svc.request({ agent: { id: s.id, session: s }, toolName: 'pwsh', reason: 'x' })
+    assert.equal(outcome, 'unavailable', '带 session 时进入应答者链，无应答者 fail-closed')
+    closeTurnOf(s)
+  })
+})
+
 /** 开 turn 的本地小助手（避免从 harness 引入 FakeSessionLog 语义） */
 function openTurnOf(session) { session.append('turn/start', { turn: 1 }) }
 function closeTurnOf(session) { session.append('turn/end', { turn: 1, reason: { kind: 'completed' } }) }

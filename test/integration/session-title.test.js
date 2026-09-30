@@ -1,48 +1,53 @@
 /**
- * T3-T 标题读取、回退与缓存清理集成测试（Agent D）。
+ * T3-T 标题读取、回退与缓存清理集成测试（Agent D，R3 按契约裁决改写）。
  *
- * 背景与证据（R2-D 第 4 条）：
- *   目标版 `@deepseek-ai/dsh-session@0.1.7-rc.2` 对同步事件读取的原文（lib/types/index.d.ts:186-189）：
- *     @deprecated Existing logic may remain unmigrated for now, but new calls are prohibited.
- *     See the [Agent Note](.../2026-09-09-deprecate-synchronous-session-event-reads.md).
- *   同样标记的还有 `eventAt()` 与 `ownEvents()`。
- *   受支持且**无**弃用标记的公开读取：`SessionTitleService.get(session)`
- *   （dsh-session-title/lib/types/index.d.ts:123，返回 SessionTitleSnapshot 含 `title`）。
- *   ⚠ API 选择（snapshotEvents 例外 vs 改走 sessionTitle 服务 vs 只做短 ID 回退）
- *     属 **A 的契约修订**，D 不擅自定；本文件只固化**可观察行为**，两种实现下都应成立。
+ * **R3 契约裁决（取代 R1/R2 的两种实现均可过写法）**：
+ *   标题方案 = **事件缓存 + 短 ID 回退**；**冷 seed 不读 title**；收到实时 `session/title` 后再更新；
+ *   审批卡片与完成/错误通知**共用同一缓存与隐私设置**。
+ *   依据：宿主 `@deepseek-ai/dsh-session@0.1.7-rc.2` 已把同步事件读取标记为
+ *   `@deprecated Existing logic may remain unmigrated for now, but new calls are prohibited.`
+ *   （`lib/types/index.d.ts:186-189`，`eventAt()`/`ownEvents()` 同）。因此插件**不得新增**
+ *   `snapshotEvents()` 调用，冷标题显示短 ID 是**已接受限制**（R3 派发书 §复查事实与裁决）。
  *
- * 覆盖（R2-D 第 4 条全清单）：
- *   T-1 冷读：seed 里已有标题、无实时 title 事件 → 通知仍带该标题
+ * ⚠ 本文件**刻意不写"两种实现都能过"的宽松断言**：冷 seed 场景必须**明确期望短 ID**，
+ *   否则就掩盖了"是否偷偷新增了被禁止的 snapshotEvents 调用"。
+ *
+ * 覆盖：
+ *   T-1 冷 seed 里的标题**不得**被读取 → 期望短 ID（契约裁决的反向断言）
+ *   T-1b 收到实时 title 后 → 标题更新；且审批卡片与完成通知**共用**该缓存
  *   T-2 完全无标题 → 短 ID 回退
- *   T-3 标题为空白/不可用 → 短 ID 回退（不得把空白当标题）
- *   T-4 session/disposed 后同 id 重建（无标题）→ 不得泄漏旧标题（缓存必须清理）
- *   T-5 缓存容量淘汰后行为仍正确（冷读重取，不得出现错标题/串标题）
- *   T-6 监听卸载/重载：titleCache 清理，新实例同 id 无标题 → 短 ID（无陈旧标题）
+ *   T-3 标题为空白/欺骗字符 → 短 ID 回退
+ *   T-4 session/disposed 后同 id 重建（无标题）→ 不得泄漏旧标题
+ *   T-5 缓存容量淘汰后行为仍正确（不串标题）
+ *   T-6 监听卸载/重载 → titleCache 清理，无陈旧标题
  *   T-7 回归：带标题的委派子会话仍零通知 —— 标题路径不得绕过主/子身份门
  *
  * 铁律：不 spawn 真实 powershell.exe、不发真实 Toast、不改 HKCU；
- *       任何用例都不得为了绿而放宽 origin === 'subagent' 判据。
+ *       任何用例都不得为绿而放宽 `origin === 'subagent'` 判据。
  */
 import assert from 'node:assert/strict'
 import { after, describe, test } from 'node:test'
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { argsOf, startNotificationHost } from './helpers/notification-host.mjs'
-import { createMockChannel } from './helpers/harness.mjs'
+import { createMockChannel, waitForSpawns } from './helpers/harness.mjs'
 
 const channel = createMockChannel()
 const spawned = () => channel.spawns
-const taskToasts = (before) => spawned().slice(before).filter((r) => argsOf(r).script === 'toast.ps1')
+const delta = (before) => spawned().slice(before)
+const taskToasts = (before) => delta(before).filter((r) => argsOf(r).script === 'toast.ps1')
+const approvalToasts = (before) => delta(before).filter((r) => argsOf(r).script === 'approval-toast.ps1')
 const drain = (before) => { for (const r of taskToasts(before)) r.child.emit('exit', 0) }
 const settle = () => new Promise((r) => setImmediate(() => setImmediate(r)))
 
 after(() => { globalThis.__approvalMockChannel = undefined })
 
-describe('T3-T 标题读取、回退与缓存清理', () => {
-  test('T-1 冷读受限（R3 裁决）：标题只在 seed 历史 → 短 ID 回退，不补读历史', async () => {
+describe('T3-T 标题：事件缓存 + 短 ID 回退（R3 契约裁决）', () => {
+  test('T-1 冷 seed 里的标题不得被读取 → 必须回退短 ID（拒绝 snapshotEvents 冷读）', async () => {
     const host = await startNotificationHost()
     const before = spawned().length
-    // 冷会话：标题在 seed 里，本进程从未发布过 session/title
-    const s = host.ctx.sessions.create(SessionId('t1-cold'), {
+    // 标题只存在于 seed 历史；本进程从未发布过 session/title 事件。
+    // 契约裁决：插件不得用 snapshotEvents() 冷读，因此这里**必须**是短 ID。
+    const s = host.ctx.sessions.create(SessionId('abcdefgh-t1-cold'), {
       seed: [
         { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
         { type: 'session/title', seq: 1, time: 2, data: { title: 'seed里的旧标题', messageSeqs: [], source: { kind: 'user' } } },
@@ -55,17 +60,74 @@ describe('T3-T 标题读取、回退与缓存清理', () => {
     const toasts = taskToasts(before)
     assert.equal(toasts.length, 1, 'completed 有 step 应通知')
     const a = argsOf(toasts[0])
-    // R3 裁决（派发 §13 / 契约 §2.5）：snapshotEvents() 已被宿主标记
-    // deprecated "new calls are prohibited"，插件不得新增调用 → 冷读路径已删除，
-    // 标题只来自实时 session/title 事件流，"冷标题显示短 ID" 是**已接受限制**。
-    // 本用例由 D 原先的"冷读应取 seed 标题"改为断言裁决后行为；
-    // 保留 D 的语义：seed 事件不发布（host-publication A2）、且不得泄漏进通知。
     assert.ok(
       !a.message.includes('seed里的旧标题'),
-      `seed 历史标题不得被冷读出来：${JSON.stringify(a.message)}`,
+      `契约禁止 snapshotEvents 冷读：seed 标题不得出现，实测 ${JSON.stringify(a.message)}`,
     )
-    assert.ok(a.message.includes('任务：会话 t1-cold'), `应回退短 ID：${JSON.stringify(a.message)}`)
+    assert.ok(
+      a.message.includes('任务：会话 abcdefgh'),
+      `冷 seed 必须回退短 ID，实测 ${JSON.stringify(a.message)}`,
+    )
     drain(before)
+    await host.unload()
+  })
+
+  test('T-1b 收到实时 title 后更新；审批卡片与完成通知共用同一缓存与隐私设置', async () => {
+    const host = await startNotificationHost()
+    const s = host.createRoot('t1b-shared')   // createRoot 会追加真实 session/title 事件
+    // ① 先发实时 title → 完成通知应带上它
+    s.append('session/title', { title: '共享标题', messageSeqs: [], source: { kind: 'user' } })
+    const b1 = spawned().length
+    host.runTurn(s, { kind: 'completed', turn: 1, withStep: true })
+    const t1 = argsOf(taskToasts(b1)[0])
+    assert.ok(t1.message.includes('任务：共享标题'), `实时 title 后完成通知应更新：${JSON.stringify(t1.message)}`)
+
+    // ② 同一会话的审批卡片必须共用同一缓存（不得各读一处）
+    const b2 = spawned().length
+    s.append('turn/start', { turn: 2 })
+    const pending = host.ctx.waterfall(
+      (await import('@deepseek-ai/dsh-scope')).scopeTarget(s, s),
+      'approval/request',
+      { agent: { id: s.id, session: s }, toolName: 'pwsh', reason: 'x' },
+      () => Promise.resolve('unavailable'),
+    )
+    await waitForSpawns(channel, b2 + 1)
+    const card = argsOf(approvalToasts(b2)[0])
+    assert.ok(card.message.includes('任务：共享标题'), `审批卡片必须共用缓存：${JSON.stringify(card.message)}`)
+    approvalToasts(b2)[0].child.emit('exit', 0)
+    await pending
+    s.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+    drain(b1)
+    drain(b2)
+    await host.unload()
+  })
+
+  test('T-1c showTitle=false 时完成通知与审批卡片**同时**只用短 ID（共用隐私设置）', async () => {
+    const host = await startNotificationHost({ config: { taskNotificationShowTitle: false } })
+    const s = host.createRoot('abcdefgh-t1c', { title: '不该泄漏的标题' })
+    const b1 = spawned().length
+    host.runTurn(s, { kind: 'completed', turn: 1, withStep: true })
+    const t1 = argsOf(taskToasts(b1)[0])
+    assert.ok(t1.message.includes('任务：会话 abcdefgh'), `完成通知应短 ID：${JSON.stringify(t1.message)}`)
+    assert.ok(!t1.message.includes('不该泄漏的标题'), '完成通知不得泄漏标题')
+
+    const b2 = spawned().length
+    s.append('turn/start', { turn: 2 })
+    const pending = host.ctx.waterfall(
+      (await import('@deepseek-ai/dsh-scope')).scopeTarget(s, s),
+      'approval/request',
+      { agent: { id: s.id, session: s }, toolName: 'pwsh', reason: 'x' },
+      () => Promise.resolve('unavailable'),
+    )
+    await waitForSpawns(channel, b2 + 1)
+    const card = argsOf(approvalToasts(b2)[0])
+    assert.ok(card.message.includes('任务：会话 abcdefgh'), `审批卡片应短 ID：${JSON.stringify(card.message)}`)
+    assert.ok(!card.message.includes('不该泄漏的标题'), '审批卡片不得泄漏标题（共用隐私设置）')
+    approvalToasts(b2)[0].child.emit('exit', 0)
+    await pending
+    s.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+    drain(b1)
+    drain(b2)
     await host.unload()
   })
 
@@ -80,13 +142,10 @@ describe('T3-T 标题读取、回退与缓存清理', () => {
     await host.unload()
   })
 
-  test('T-3 标题事件为空白文本 → 短 ID 回退（不得把空白当标题）', async () => {
+  test('T-3 标题为空白/欺骗字符 → 短 ID 回退（不得把空白当标题）', async () => {
     const host = await startNotificationHost()
     const before = spawned().length
     const s = host.createRoot('abcdef12-t3-blank')
-    // 宿主自身会拒绝空标题（SessionTitleInvalidError），但插件必须对
-    // "取到的标题归一化后为空" 也有防御 —— 这里用带不可见字符的标题近似：
-    // 归一化后为空白/控制字符 → 必须回退短 ID，而不是显示一串乱码。
     s.append('session/title', { title: ' \u200b\u202e \t ', messageSeqs: [], source: { kind: 'user' } })
     host.runTurn(s, { kind: 'completed', turn: 1, withStep: true })
     const a = argsOf(taskToasts(before)[0])
@@ -101,73 +160,69 @@ describe('T3-T 标题读取、回退与缓存清理', () => {
 
   test('T-4 session/disposed 后同 id 重建（无标题）→ 不得泄漏旧标题', async () => {
     const host = await startNotificationHost()
-    // 第一段：带标题的会话，随后 dispose（真实 session/disposed 路径）
     let first
     const f1 = host.ctx.plugin((inner) => {
       first = inner.sessions.create(SessionId('t4-dup'), { meta: { cwd: process.cwd() } })
       first.append('session/title', { title: '旧标题会话', messageSeqs: [], source: { kind: 'user' } })
-      // 注意：这里不能 return 任何值 —— cordis 会把返回值当 effect（实测 "Invalid effect"）
+      // 不能 return 任何值 —— cordis 会把返回值当 effect（实测 "Invalid effect"）
     })
     await f1
     assert.ok(first, '第一段会话已创建')
-    await f1.dispose()   // 触发 session/disposed → 插件必须清掉 titleCache 里的 't4-dup'
+    await f1.dispose()   // 触发 session/disposed → 插件必须清掉 titleCache 的 't4-dup'
     await settle()
 
-    // 第二段：同 id 重建，**不带**标题
     const s2 = host.createRoot('t4-dup')
     assert.notEqual(s2, first)
     const before = spawned().length
     host.runTurn(s2, { kind: 'completed', turn: 1, withStep: true })
     const a = argsOf(taskToasts(before)[0])
-    assert.ok(
-      !a.message.includes('旧标题会话'),
-      `同 id 重建后不得泄漏旧标题：${JSON.stringify(a.message)}`,
-    )
+    assert.ok(!a.message.includes('旧标题会话'), `同 id 重建后不得泄漏旧标题：${JSON.stringify(a.message)}`)
     assert.ok(a.message.includes('任务：会话 t4-dup'), `应回退短 ID：${JSON.stringify(a.message)}`)
     drain(before)
     await host.unload()
   })
 
-  test('T-5 缓存容量淘汰后：仍缓存者显示标题，被淘汰者短 ID 回退，绝不串标题', async () => {
+  test('T-5 缓存容量上界：淘汰者回退短 ID、保留者仍是自己的标题（不串位、不陈旧）', async () => {
     const host = await startNotificationHost()
-    const before = spawned().length
-    // 制造 300 个带独立标题的会话（超过 A 的 TITLE_CACHE_MAX=256）
-    const N = 300
-    const MAX = 256          // src/index.ts TITLE_CACHE_MAX；本用例把该上界钉进契约
-    const evicted = N - MAX  // 插入序最早的 44 个会被容量淘汰
+    // A 的 TITLE_CACHE_MAX = 256；造 300 个带实时 title 的会话触发容量淘汰。
+    // 契约裁决下淘汰的行为是**已接受**的：该会话回退短 ID，而**不是**显示别人的标题。
     const sessions = []
-    for (let i = 0; i < N; i++) {
-      const s = host.createRoot(`t5-cap-${i}`, { title: `容量标题${i}` })
-      sessions.push(s)
-    }
-    // 逐个走一轮并驱动结算：仍在缓存 → 自己的标题；已被淘汰 → 短 ID 回退。
-    // 用**首行精确相等**判定（子串包含会把 "容量标题100" 误判成含 "容量标题1"），
-    // 精确相等天然保证不串别的会话的标题（D 的"不串标题"语义保留）。
-    for (let i = 0; i < N; i++) {
+    for (let i = 0; i < 300; i++) sessions.push(host.createRoot(`t5-cap-${i}`, { title: `容量标题${i}` }))
+
+    /** 探测一个会话：返回它本轮通知的 message */
+    const probe = async (idx) => {
       const b = spawned().length
-      host.runTurn(sessions[i], { kind: 'completed', turn: 1, withStep: true })
+      host.runTurn(sessions[idx], { kind: 'completed', turn: 1, withStep: true })
       const toasts = taskToasts(b)
-      assert.equal(toasts.length, 1, `会话 ${i} 应通知`)
-      const a = argsOf(toasts[0])
-      const firstLine = a.message.split('\n')[0]
-      if (i < evicted) {
-        assert.equal(
-          firstLine, `任务：会话 ${`t5-cap-${i}`.slice(0, 8)}`,
-          `会话 ${i} 标题应已被容量淘汰并短 ID 回退：${JSON.stringify(a.message)}`,
-        )
-      } else {
-        assert.equal(
-          firstLine, `任务：容量标题${i}`,
-          `会话 ${i} 标题应仍在缓存且不得串位：${JSON.stringify(a.message)}`,
-        )
-      }
+      assert.equal(toasts.length, 1, `会话 ${idx} 应通知`)
+      const msg = argsOf(toasts[0]).message
       drain(b)
-      await settle()   // worker 串行：必须让上一条结算完成后，下一条 spawn 才会发生
+      await settle()   // worker 串行
+      return msg
     }
+
+    // ① 最早创建的会话（必被淘汰）→ 必须回退自己的短 ID，且不得显示任何"容量标题N"
+    const evicted = await probe(0)
+    assert.ok(
+      evicted.includes('任务：会话 t5-cap-0'),
+      `被淘汰会话必须回退自己的短 ID：${JSON.stringify(evicted)}`,
+    )
+    assert.ok(!/容量标题\d+/.test(evicted), `被淘汰会话不得显示任何缓存标题：${JSON.stringify(evicted)}`)
+
+    // ② 最近创建的会话（必被保留）→ 必须是自己的标题
+    const kept = await probe(299)
+    assert.ok(kept.includes('任务：容量标题299'), `保留会话应是自己的标题：${JSON.stringify(kept)}`)
+
+    // ③ 中段抽样：不得出现"张冠李戴"
+    const mid = await probe(299 - 100)
+    assert.ok(
+      mid.includes(`任务：容量标题${299 - 100}`),
+      `中段会话标题不得串位：${JSON.stringify(mid)}`,
+    )
     await host.unload()
   })
 
-  test('T-6 卸载/重载：titleCache 清理，新实例同 id 无标题 → 短 ID（无陈旧标题）', async () => {
+  test('T-6 卸载/重载：titleCache 清理，新实例同 id 无实时 title → 短 ID（无陈旧标题）', async () => {
     const host = await startNotificationHost()
     const s = host.createRoot('t6-reload', { title: '重载前标题' })
     host.runTurn(s, { kind: 'completed', turn: 1, withStep: true })
@@ -176,15 +231,11 @@ describe('T3-T 标题读取、回退与缓存清理', () => {
 
     const host2 = await startNotificationHost()
     const before = spawned().length
-    const s2 = host2.createRoot('t6-reload')   // 同 id，但新实例、无标题事件
+    const s2 = host2.createRoot('t6-reload')   // 同 id，新实例，无实时 title
     host2.runTurn(s2, { kind: 'completed', turn: 1, withStep: true })
     const a = argsOf(taskToasts(before)[0])
-    assert.ok(
-      !a.message.includes('重载前标题'),
-      `重载后不得沿用上一实例的标题：${JSON.stringify(a.message)}`,
-    )
-    // 短 ID 取前 8 位：'t6-reload' → 't6-reloa'
-    assert.ok(a.message.includes('任务：会话 t6-reloa'), `应回退短 ID：${JSON.stringify(a.message)}`)
+    assert.ok(!a.message.includes('重载前标题'), `重载后不得沿用上一实例的标题：${JSON.stringify(a.message)}`)
+    assert.ok(a.message.includes('任务：会话 t6-reloa'), `应回退短 ID（前 8 位）：${JSON.stringify(a.message)}`)
     drain(before)
     await host2.unload()
   })
@@ -193,7 +244,6 @@ describe('T3-T 标题读取、回退与缓存清理', () => {
     const host = await startNotificationHost()
     const before = spawned().length
     const child = host.createChild('t7-child')
-    // 子代理也有标题（真实场景：委派时继承/生成标题）
     child.append('session/title', { title: '子代理的标题', messageSeqs: [], source: { kind: 'fallback' } })
     host.runTurn(child, { kind: 'completed', turn: 1, withStep: true })
     host.runTurn(child, { kind: 'error', turn: 2, withStep: true })
