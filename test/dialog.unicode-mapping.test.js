@@ -27,6 +27,34 @@ function makeSandbox() {
   return { root, localAppData, defaultDir, mappedDir }
 }
 
+/**
+ * 有界重试的沙箱清理。
+ *
+ * 为什么不能直接 `rmSync(..., { force: true })`：`force` 只忽略"不存在"，
+ * **不重试**占用错误。本文件会真的拉起 `wscript.exe`（GUI 子系统）写结果文件，
+ * 测试结束时刚 `kill()` 的进程可能仍持有句柄，Windows 上删除被占用目录会抛
+ * EPERM/EACCES/EBUSY。实测：本地（已装 DSH 的机器）不触发，GitHub Actions 的
+ * windows-latest 上稳定触发 —— 于是"断言已通过"的用例在 finally 里失败，
+ * 把一次真实通过误报成红灯（CI run 36745467011）。
+ *
+ * 处置：短暂退避重试；最后仍失败则**不抛**（清理失败不得改写断言结论），只留告警。
+ * 临时目录由 runner 回收，不泄漏到用户环境。
+ */
+function cleanupSandbox(root) {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      rmSync(root, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const code = error?.code
+      if (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY' && code !== 'ENOTEMPTY') throw error
+      // 同步退避是刻意的：本文件其余部分已用 Atomics.wait 做同步等待
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * (attempt + 1))
+    }
+  }
+  console.warn(`[test] 沙箱目录清理失败（被占用），交由 runner 回收: ${root}`)
+}
+
 /** 用 PowerShell 以 [System.Text.Encoding]::Unicode 写映射（与脚本一致）。
  *  中文路径经由 env 传入（UTF-16 进程环境），避免命令行编码失真。 */
 function writeUnicodeMapping(env, mappingPath, mappedDir) {
@@ -67,7 +95,7 @@ test('ISSUE-1/清理路径: 中文私有 StateDir 下 -CleanupToken 经映射命
     assert.equal(existsSync(join(s.mappedDir, `${tok}.pending`)), false, '.pending 未被定向清理')
     assert.equal(existsSync(join(s.mappedDir, `${tok}.result`)), false, '.result 未被定向清理')
   } finally {
-    rmSync(s.root, { recursive: true, force: true })
+    cleanupSandbox(s.root)
   }
 })
 
@@ -124,7 +152,7 @@ test('ISSUE-1/VBS: UTF-16 LE 映射 -> 中文+空格 StateDir 命中', async () 
     })
     assert.equal(readFileSync(result, 'utf8').split('\n')[0].trim(), 'approve')
   } finally {
-    rmSync(s.root, { recursive: true, force: true })
+    cleanupSandbox(s.root)
   }
 })
 
@@ -140,7 +168,7 @@ test('ISSUE-1/PS 回退: UTF-16 LE 映射 -> 中文+空格 StateDir 命中', () 
     assert.equal(waitForFile(result), true, 'PS 回退处理器未命中中文映射目录')
     assert.equal(readFileSync(result, 'utf8').split('\n')[0].trim(), 'approve')
   } finally {
-    rmSync(s.root, { recursive: true, force: true })
+    cleanupSandbox(s.root)
   }
 })
 
@@ -154,6 +182,6 @@ test('ISSUE-1/协议: 映射文件有 UTF-16 LE BOM，中文路径可无损往�
     assert.equal(bytes[1], 0xfe)
     assert.equal(bytes.subarray(2).toString('utf16le'), s.mappedDir)
   } finally {
-    rmSync(s.root, { recursive: true, force: true })
+    cleanupSandbox(s.root)
   }
 })
