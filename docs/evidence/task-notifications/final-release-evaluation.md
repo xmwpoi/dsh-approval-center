@@ -1,0 +1,195 @@
+# 最终发布评估（0.4.0-rc.1）
+
+日期：2026-10-01（Asia/Shanghai）。编制：**Agent A**（唯一整合与候选包所有人）。
+派发：`D:\codex\dsh-notification-round4-final-signoff.md`（裁决见 `…-round4-dispatch`）。
+
+> **本轮只准备，不合并 PR、不打 tag、不发布、不升级生产。** 是否发布待用户最终指令。
+> **不得冒称"全部完成"**：真实主/子会话实机项按 §3 分层如实标注。
+
+---
+
+## 0. 一句话结论
+
+**自动层、独立复核层、包层已全部闭合**（N0/N1/N3/N4 满足，含零 fail/零 skip 的本地与远端 CI、
+B 的变异测试实证、D 的独立包复现、C 的静态通道复核）。
+**N2 实机层只完成通道级与静态部分；真实主/子会话项仍为 PENDING**（C 正在已授权的独占窗口内推进）。
+
+---
+
+## 1. 冻结坐标
+
+| 项 | 值 |
+|---|---|
+| **source commit** | `5dfe9378a35772dc03be5ac576f419dc108e1cb7` |
+| 分支 | `adapt/dsh-018-notify-a`（本地 = 远端） |
+| **候选包** | `D:\codex\dsh-notify-A-pack\r4a\dsh-approval-center-0.4.0-rc.1.tgz` |
+| **完整 SHA256** | `C6C7C84E68489EE694EB52440F24D8EAEA3427D360541C0C6961A8EC18394E17` |
+| 大小 | **82467 bytes** |
+| 版本 / peer / 依赖 | `0.4.0-rc.1` / `@deepseek-ai/dsh: 0.1.7-rc.2` / 仅 `schemastery ^3.18.0` |
+| Draft PR | <https://github.com/xmwpoi/dsh-approval-center/pull/3>（**draft，未合并**） |
+| 远端 CI | run [36750463844](https://github.com/xmwpoi/dsh-approval-center/actions/runs/36750463844) **success** |
+| 首轮失败（历史归档） | run [36745467011](https://github.com/xmwpoi/dsh-approval-center/actions/runs/36745467011) |
+
+**superseded 候选（历史保留，不删除）**：R1 `F7C6E74E…`（77254）、R2 `98F6CBE873DCCE89…`（78493）、
+R3 `CC916356…`（81918，无 R4 缺陷修复）。
+
+---
+
+## 2. N0：契约（满足）
+
+| 项 | 结论 |
+|---|---|
+| 契约版本一致、子代理**始终不通知** | ✅ 契约 §0/§3.1；弃用开关即使 `true` 也强制不生效 |
+| 弃用 API 裁决明确 | ✅ §2.5：`snapshotEvents()` 已 `@deprecated "new calls are prohibited"`（引用宿主原文），**删除冷读**；标题只来自 `session/title` 事件流 + 短 ID 回退；"冷标题显示短 ID"为**已接受限制** |
+| 审批与完成**共用同一缓存与隐私设置** | ✅ §2.5；由 D 的 `T-1b`/`T-1c` 用例固化 |
+| 超时/step 门禁裁决明确 | ✅ step 门禁**仅约束 `completed`**；`error`/`blocked`/`max-tokens` 各自独立标题与正文（§3.2，已补齐） |
+| NF-35b | ✅ 标为"已关闭（R2）"，历史记录保留不删除 |
+| CR-B3 / CR-B4 | ✅ **均已闭**，不再要求用户对已明确需求再次拍板 |
+
+---
+
+## 3. N1：自动门与独立复核（满足）
+
+### 3.1 计数（本地与远端一致，零 fail/零 skip）
+
+| 命令 | 本地 | 干净 checkout | 远端 CI |
+|---|---|---|---|
+| `typecheck` / `build` | exit 0 | exit 0 | exit 0 |
+| `test:unit` | **255/255** | **255/255** | **255/255** |
+| `test:integration` | **79/79** | **79/79** | **79/79** |
+
+零 fail、零 skip。**未相加**历史轮次的 209/228/250/61/31 —— 先合并实际文件，再跑一次最终套件。
+
+### 3.2 独立复核（**非转录**）
+
+| 复核方 | 内容 | 结论 |
+|---|---|---|
+| **B** | 对 `c90a1a5` 独立 checkout，实跑 250/75 | ✅ 复现；并做**变异测试**：把 D1–D4 四处修复逐一改回坏形态，对应用例立即变红（M1→AD-30、M2→AD-31、M3→AD-13、M4→AD-32，各 `fail=1`），随后按 SHA256 逐字节还原 ⇒ **守护不是装饰性断言** |
+| **D** | 独立 checkout、独立打包目录、独立核 CI | ✅ 复现；**独立包**与 `r3c`/新 HEAD 全部 `CC916356…`（当时）/新包一致；确认 `files[]` 不含 `test/` |
+| **A** | 独立核 B 的 4 缺陷与吸收方式 | ✅ `git diff 3036ebd c90a1a5 -- src/notifications.ts test/notifications.adversarial.test.js` = **空**（原样吸收）；AD 用例**恰好 32**；D1–D4 均在位 |
+
+### 3.3 覆盖差异（D 独立核对，A 采纳）
+
+`task-notifications.test.js`：A=28 例、D=23 例，规范化标题比对 **matched=23、D-only=0、A-only=5**
+⇒ **A 版是严格超集，无遗漏的 D 断言**。`agent-registry` / `session-title` / `host-publication` 三文件
+在 A 树与 D 树**完全相同**（A 原样采纳 D 的版本，含 `R-8`/`R-9`/`T-1b`/`T-1c`）。
+
+### 3.4 CI 首轮失败（历史归档，不删除）
+
+首轮 run `36745467011`（`717044a`）= **249/250**，`check` 在 `test:unit` 失败：
+既有基线用例 `dialog.unicode-mapping` 的 `finally` 里 `rmSync` 抛 EPERM。
+根因：该用例真的拉起 `wscript.exe`，同 tick `kill()` 后 windows-latest 上进程仍持句柄，
+而 `rmSync({force:true})` **不重试**占用错误。本地从未复现（真实环境差异，非"本地侥幸"）。
+修复：`cleanupSandbox()` 有界退避重试，最终失败**不抛**（清理失败不得把已通过的断言改写成红灯）。
+**D 的严重度裁决（A 采纳）**：这是**"未等待终止"的时序缺口，不是真实进程泄漏**
+—— win32 上 `kill()` 是强制终止，实测无残留 `wscript`。
+判据记录：**以 kill 后进程是否仍存活判泄漏，不以 close 是否到达判泄漏。**
+D 建议的"有界等待 close + 红例"记为**非阻断后续项**，按派发书 §24 **不扩大修改**。
+
+### 3.5 C 发现并由 A 修复的 2 个真实缺陷（本轮最有价值的产出）
+
+| 缺陷 | 位置 | 性质 | 修复 |
+|---|---|---|---|
+| **R4C-D1** | `scripts/toast.ps1` L45/L49 | PowerShell `-notmatch`/`-ne` **大小写不敏感**，Node 侧白名单 `/^[0-9a-f]{16}$/` 与 `'dsh-task'` **区分大小写** ⇒ "双端校验"在大小写维度失效，**大写 Tag 会真的投递** | 改 `-cnotmatch`/`-cne` |
+| **R4C-D2** | `src/dialog.ts` L542/L546 | `taskNotificationTag()` 在 key 类型守卫**之前**调用，非字符串 key 抛 `TypeError` **逃出** `send()` promise（reject），违背"只 resolve 三值"的冻结契约 | 守卫移到哈希调用之前 |
+
+- 两处均**经 A 独立复现**后才修（D1 用 `-notmatch` vs `-cnotmatch` 对照；D2 用 5 种非字符串 key）。
+- **可达性如实说明**：R4C-D2 经正常接线**不可达**（B 已守卫 `sessionId`）⇒ 属**契约健壮性缺陷，非当前阻断**；
+  R4C-D1 则**可达且已真实投递过**（C 的 `V3` 用例实测穿透到 `Show()`）。
+- 修复后补 **5 个回归测试**（非字符串 key 结算 `failed` 且不 reject/不 spawn；大写/混合大小写 Tag 与大写 Group 均 exit 1；
+  源码防回退守卫）。
+- **R4C-O1**（截断分支丢"选择："行）：当前接线**不可达**（A 用 `normalizeInline` 折成单行）⇒ 记为**已知边界**，不修改。
+
+---
+
+## 4. N2：实机（**分层如实，未完成**）
+
+| 层 | 范围 | 状态 |
+|---|---|---|
+| **静态结构门** | `-ValidateOnly` 构造 + `LoadXml`；布局函数与协议字符串在包内；4 脚本 BOM/ASCII/CRLF；PS5.1 `ParseFile` | ✅ **PASS**（C 执行；A 独立复核：包内 `Build-ApprovalToastXml`/`ValidateOnly`/`maxTextElements` 均在位） |
+| **通道级静态** | 任务脚本参数矩阵（非法输入 exit 1、零 HKCU/URI 副作用） | ✅ **PASS** |
+| **通道级真实投递** | 真实提交、中文/空格路径、默认静音、同 key 替换、取消杀进程、定向清理幂等、他人历史不变 | ⏳ **进行中**（C 在已授权窗口内） |
+| **审批布局真实可读性** | 批准/拒绝回传、短/长中文标题与原因、EN/emoji、100/125/150% 缩放、横幅 vs 展开态 | ⏳ **进行中**；**不预签"零截断"**（行数预算 ≠ 实际像素高度） |
+| **真实主会话** | agent-loop 完成/错误、主审批共存、取消静默、重载不重复 | ⏳ **PENDING**：需真实主会话；缺凭据/适配器时**保持 PENDING** |
+| **真实子会话** | 启动/结束/错误/continuation/审批 **零本插件通知**（旧开关 `true`） | ⏳ **PENDING**：需真实子会话凭据 |
+| **环境恢复** | 进入/退出 AUMID/URI/历史逐值恢复 | ⏳ **PENDING** |
+
+**边界声明（必须随发布说明保留）**：
+
+- 通知 API 成功**只代表已提交给 Windows**，**不代表用户看到或听到**；
+  系统关闭通知、勿扰/专注模式或权限限制都会让横幅不出现。
+- 布局**行数预算不等于实际像素高度**；中文长标题、显示缩放、系统截断**必须实机确认**。
+- "完成"指**主会话完成一次实际执行的一轮**，不代表用户任务目标全部达成，也不代表后台子代理都已结束。
+- 冷标题显示短 ID 是**已接受限制**。
+
+### 4.1 通知历史基线（双方定向清理后无净变化）
+
+| 项 | 值 |
+|---|---|
+| TOTAL | **13** |
+| `dsh-task` / `dsh-result` / `dsh-approval` | 2 / 11 / 0 |
+
+C 与 A 各因"合法路径也会真实投递"的用例设计失误**各投递过 1 条**，均用**三参 `Remove` 只删本人 tag**
+并复核基线回到 13。**双方均未使用 `History.Clear` / `RemoveGroup`。**
+
+---
+
+## 5. N3：包（满足）
+
+| 项 | 结论 |
+|---|---|
+| 版本 / peer | `0.4.0-rc.1` / `@deepseek-ai/dsh: 0.1.7-rc.2`（精确） |
+| `package-lock` 版本一致 | ✅ 顶层与 `packages[""]` 均 `0.4.0-rc.1`（R3 修正偏斜），`npm ci` 实测通过 |
+| 源码→tgz 逐字节 | ✅ 12 个入包文件 SHA256 **0 处不一致** |
+| 脚本字节门 | ✅ `approval-toast.ps1` BOM+CRLF 538/裸 LF 0；`toast.ps1` BOM+CRLF 121/裸 LF 0；`.ps1` 处理器与 `.vbs` 纯 ASCII |
+| 可复现 | ✅ 两次独立干净检出（`r4a`/`r4b`）**逐字节相同**；D 亦独立复现 |
+| 入包条目 | 21 项，含 `lib/*`、4 个脚本、`cordis.patch.yml`、README/CHANGELOG/LICENSE |
+| 协议不变 | ✅ `scenario="reminder"`、`activationType="protocol"`、approve/reject 参数、退出码 0/1/2/3/4、`requestToken`、`ExpirationTime` 全部保留 |
+| **通知历史/生产环境** | ✅ 未改生产 profile；AUMID/URI 未改；历史基线未净变化 |
+
+---
+
+## 6. N4：文档（满足，附边界）
+
+- README 功能表已改为主对话四类（审批 / 回执 / 本轮完成 / 本轮异常），并写明**子代理通知已整体关闭**；
+  补 `blocked`/`max-tokens` 为**独立终态、不混称"运行出错"**；补勿扰/通知关闭/权限限制的**范围限制**。
+- `package.json` description/keywords 已去掉"parallel subagents completion"宣传。
+- CHANGELOG 有 0.4.0-rc.1 条目与已知限制。
+- 契约 §2.5/§3.2/§7 已与**实际实现**对齐（无冷读、blocked/max-tokens 标题正文齐全、NF-35b 关闭）。
+- D 的用户指南草案已按 R3 标题裁决与 R4 现状修正。
+
+---
+
+## 7. 门禁汇总
+
+| 门 | 结论 |
+|---|---|
+| **N0 契约** | ✅ 满足 |
+| **N1 自动与独立** | ✅ 满足（255/79 零 fail/skip；本地+干净 checkout+远端 CI；B 变异测试；D 独立包/CI 复核） |
+| **N2 实机** | ⚠️ **分层未完成**：静态与通道级静态 PASS；通道级真实与布局真实**进行中**；真实主/子会话 **PENDING** |
+| **N3 包** | ✅ 满足（可复现、逐字节、字节门、协议不变） |
+| **N4 文档** | ✅ 满足 |
+
+---
+
+## 8. 发布建议
+
+1. **技术准备已就绪**：候选包 `C6C7C84E…` 可复现、可核验、自动门全绿、独立复核闭合。
+2. **不建议在 N2 实机闭合前发布**。理由：本轮新增了 2 处**运行时代码/脚本变更**（R4C-D1/D2），
+   而布局实际可读性与真实通道行为**尚未实机确认**；派发书亦要求"没有新的独占窗口时明确 PENDING"。
+3. **发布前置条件**：C 的 `r4-windows-results.md` 绑定 `C6C7C84E…` 完成，且 D 审核其范围。
+   若真实主/子会话始终不可得，应在发布说明中**明确列出 PENDING 项**，不得声称"全面实机完成"。
+4. **发布动作**（待用户指令）：合并 PR #3 → 打 tag → `release.yml` 会创建 **draft** Release；
+   **上一版 `v0.3.1-rc.1` 的 Release/tag/附件保持不变**。
+5. 若实机后**任何运行时代码/脚本/布局变更**，**必须重打包并重跑受影响实机矩阵**。
+
+---
+
+## 9. 签收状态（A 不代签）
+
+| 方 | 交付 | 状态 |
+|---|---|---|
+| B | `r4-state-machine-signoff.md` | ✅ 已交；A 已独立复核（含变异测试） |
+| D | `r4-independent-signoff.md`、`r4-package-signoff.md`、`r4-d-unique-assertions.md`、`r4-ci-and-package-refresh.md` | ✅ 已交；已独立核 CI 与包复现 |
+| C | `r4-windows-results.md` | ⏳ **进行中**（已授权窗口）；**A 不代签实机** |
+| 用户 | 发布决定 | ⏳ 待定 |
