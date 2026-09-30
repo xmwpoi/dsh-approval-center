@@ -1,21 +1,44 @@
 /**
- * 审批队列调度器。
+ * 审批队列调度器（契约：docs/compat/contract-017.md §4.2）。
  * serial 模式：串行弹窗，逐条审阅（防误点，推荐）。
- * parallel 模式：每个请求独立弹窗，窗口并列；但**并发数有上限**（信号量背压）。
+ * parallel 模式：每个请求独立弹窗，窗口并列；并发数有上限（信号量背压，默认 3）。
  *
- * 为什么 parallel 也要背压：每个审批 = 一个 PowerShell worker 进程 + 一个顶层窗口，
- * 不设上限时 N 个并发提权 = N 个进程，只受 timeoutSec 约束。上限默认 3：
- * 够"多代理并行时同时看到几件事"，又不至于把屏幕和进程表打爆。
+ * 结果映射不进队列：onCancel()/onClose() 由调用方提供（队列保持泛型，
+ * Windows/Dialog 实现一概不在此模块）。
  */
+export type QueueState = 'accepting' | 'closing' | 'closed';
+export interface QueueCallbacks<TReq, TRes> {
+    /** 执行阶段；signal 是请求 signal 与队列关闭信号的组合 */
+    run(req: TReq, signal: AbortSignal): Promise<TRes>;
+    /** 入队前已中止 / 排队中被撤回时的结算值 */
+    onCancel(): TRes;
+    /** 关闭后（或 close() 时仍在排队）的结算值 */
+    onClose(): TRes;
+}
 export declare class ApprovalQueue<TReq, TRes> {
-    private readonly handler;
+    private readonly cb;
     private readonly mode;
-    private chain;
+    private _state;
+    private readonly queued;
     private running;
-    private readonly waiting;
-    private readonly maxConcurrent;
-    constructor(handler: (req: TReq) => Promise<TRes>, mode: 'serial' | 'parallel', maxConcurrent?: number);
-    submit(req: TReq): Promise<TRes>;
-    /** 信号量：不超过 maxConcurrent 个 handler 同时在跑，多余的排队等令牌。 */
-    private runBounded;
+    private pumping;
+    /** close() 时中止：组合进活动条目的 signal，请求 handler 尽快结算 */
+    private readonly closeController;
+    private closeWaiters;
+    private closePromise;
+    private readonly limit;
+    constructor(cb: QueueCallbacks<TReq, TRes>, mode: 'serial' | 'parallel', maxConcurrent?: number);
+    get state(): QueueState;
+    submit(req: TReq, signal?: AbortSignal): Promise<TRes>;
+    /**
+     * 关闭：停接单 → 用 onClose() 结算排队项 → 中止活动 worker 的组合 signal 并等待其结算。
+     * 幂等；close() 后 submit 也以 onClose() 结算。handler 必须响应 signal 或自行结算，
+     * 否则 close() 的等待不会完成（"所有 Promise 最终结算"是 handler 侧契约）。
+     */
+    close(): Promise<void>;
+    private pump;
+    private startEntry;
+    /** 结算必须幂等：取消/关闭/异常/正常完成会竞争同一条目 */
+    private settleEntry;
+    private settleEntryError;
 }

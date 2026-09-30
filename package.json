@@ -1,6 +1,6 @@
 {
   "name": "dsh-approval-center",
-  "version": "0.3.0",
+  "version": "0.3.1-rc.1",
   "description": "DSH (DeepSeek Harness) plugin: Windows notification-center approvals (approve/reject buttons) and completion notifications for parallel subagents — a task control center for human-in-the-loop approvals.",
   "keywords": [
     "dsh-plugin",
@@ -49,7 +49,7 @@
   },
   "homepage": "https://github.com/xmwpoi/dsh-approval-center#readme",
   "peerDependencies": {
-    "@deepseek-ai/dsh": ">=0.1.7-rc.0"
+    "@deepseek-ai/dsh": "0.1.7-rc.2"
   },
   "dependencies": {
     "schemastery": "^3.18.0"
@@ -62,8 +62,10 @@
     "prepare": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
-    "test": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --test --test-concurrency=1 test/host-contract.test.js test/queue.test.js test/store.test.js test/dialog.test.js test/dialog.scripts.test.js test/dialog.cleanup.test.js test/dialog.uri-handler.test.js test/dialog.unicode-mapping.test.js",
+    "test:integration": "node --import ./test/integration/hooks/register.mjs --test --test-concurrency=1 test/integration/approval-flow.test.js test/integration/lifecycle.test.js",
     "test:approval": "node test/approval.test.js",
-    "typecheck": "tsc --noEmit"
+    "test": "npm run typecheck && npm run build && npm run test:unit && npm run test:integration"
   }
 }

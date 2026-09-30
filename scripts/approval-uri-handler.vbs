@@ -74,11 +74,17 @@ If ok Then
   raw = ""
   If fso.FileExists(mapPath) Then
     On Error Resume Next
-    Set stream = fso.OpenTextFile(mapPath, 1)
-    If Err.Number = 0 Then raw = Trim(stream.ReadAll)
+    Set stream = fso.OpenTextFile(mapPath, 1, False, -1)
+    If Err.Number = 0 Then raw = stream.ReadAll
     If Err.Number = 0 Then stream.Close
     Err.Clear
     On Error GoTo 0
+    ' Unicode streams may expose the UTF-16 LE BOM as a leading character.
+    ' Trim does not remove it, so strip it before validating the rooted path.
+    If Len(raw) > 0 Then
+      If Left(raw, 1) = ChrW(&HFEFF) Then raw = Mid(raw, 2)
+    End If
+    raw = Trim(raw)
     ' only accept a rooted path: an empty or relative mapping must never redirect the write
     If Len(raw) > 1 Then
       If Mid(raw, 2, 1) = ":" Or Left(raw, 2) = "\\" Then target = raw

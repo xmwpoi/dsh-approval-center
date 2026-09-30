@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# 分层门禁（计划书 §7 / contract-017.md）：
+#   job check        — 构建、类型、单测（mock 层）、脚本字节级编码 + PS5.1 解析
+#   job integration  — 真实宿主 fixture 非交互集成：0.1.7-rc.2 为强制门，
+#                      0.1.5-rc.1 fixture 仅安装校验；回归用例待补。
+#   人工 Toast 测试（test:approval）不入 CI。
+
 jobs:
   check:
     runs-on: windows-latest
@@ -14,8 +20,12 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci
+      - run: npm run typecheck
       - run: npm run build
-      - run: npm test
+      # 单测里的 dialog.scripts.test.js 用 powershell.exe（真实 5.1）做
+      # Parser::ParseFile 语法门禁——windows-latest 自带 5.1，满足
+      # "不能用 pwsh 解析代替实际执行环境"的要求。
+      - run: npm run test:unit
 
       # 这个插件的功能正确性依赖脚本的字节级编码：
       #   .ps1 含非 ASCII 时必须带 UTF-8 BOM（否则 PS 5.1 按 ANSI 解码 → 语法错误 →
@@ -42,3 +52,33 @@ jobs:
           }
           if ($fail -gt 0) { throw "$fail script encoding/syntax gate(s) failed" }
           Write-Host 'script encoding gates passed'
+
+  integration:
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: npm run build
+      - name: install exact DSH 0.1.7-rc.2 test fixture (mandatory)
+        shell: pwsh
+        working-directory: test/integration
+        run: |
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'target fixture install failed' }
+          node -e "for(const n of ['dsh-llm','dsh-scope','dsh-session','dsh-user-approval']) { const v=require('./node_modules/@deepseek-ai/'+n+'/package.json').version; if(v!=='0.1.7-rc.2') throw new Error(n+' version drift: '+v) }"
+          if ($LASTEXITCODE -ne 0) { throw 'target fixture version drift' }
+      - name: install exact DSH 0.1.5-rc.1 fixture (observation only)
+        shell: pwsh
+        working-directory: test/integration/fixture-015
+        continue-on-error: true
+        run: |
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'legacy fixture install failed' }
+          node -e "for(const n of ['dsh-llm','dsh-scope','dsh-session','dsh-user-approval']) { const v=require('./node_modules/@deepseek-ai/'+n+'/package.json').version; if(v!=='0.1.5-rc.1') throw new Error(n+' version drift: '+v) }"
+          if ($LASTEXITCODE -ne 0) { throw 'legacy fixture version drift' }
+      # 0.1.7-rc.2 是强制门：失败即红
+      - run: npm run test:integration
