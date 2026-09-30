@@ -38,7 +38,7 @@ const settle = () => new Promise((r) => setImmediate(() => setImmediate(r)))
 after(() => { globalThis.__approvalMockChannel = undefined })
 
 describe('T3-T 标题读取、回退与缓存清理', () => {
-  test('T-1 冷读：标题只存在于 seed 历史（无实时 title 事件）→ 通知仍带该标题', async () => {
+  test('T-1 冷读受限（R3 裁决）：标题只在 seed 历史 → 短 ID 回退，不补读历史', async () => {
     const host = await startNotificationHost()
     const before = spawned().length
     // 冷会话：标题在 seed 里，本进程从未发布过 session/title
@@ -55,7 +55,16 @@ describe('T3-T 标题读取、回退与缓存清理', () => {
     const toasts = taskToasts(before)
     assert.equal(toasts.length, 1, 'completed 有 step 应通知')
     const a = argsOf(toasts[0])
-    assert.ok(a.message.includes('任务：seed里的旧标题'), `冷读应取 seed 标题：${JSON.stringify(a.message)}`)
+    // R3 裁决（派发 §13 / 契约 §2.5）：snapshotEvents() 已被宿主标记
+    // deprecated "new calls are prohibited"，插件不得新增调用 → 冷读路径已删除，
+    // 标题只来自实时 session/title 事件流，"冷标题显示短 ID" 是**已接受限制**。
+    // 本用例由 D 原先的"冷读应取 seed 标题"改为断言裁决后行为；
+    // 保留 D 的语义：seed 事件不发布（host-publication A2）、且不得泄漏进通知。
+    assert.ok(
+      !a.message.includes('seed里的旧标题'),
+      `seed 历史标题不得被冷读出来：${JSON.stringify(a.message)}`,
+    )
+    assert.ok(a.message.includes('任务：会话 t1-cold'), `应回退短 ID：${JSON.stringify(a.message)}`)
     drain(before)
     await host.unload()
   })
@@ -119,26 +128,39 @@ describe('T3-T 标题读取、回退与缓存清理', () => {
     await host.unload()
   })
 
-  test('T-5 标题缓存容量淘汰后，行为仍正确（冷读重取，不串标题）', async () => {
+  test('T-5 缓存容量淘汰后：仍缓存者显示标题，被淘汰者短 ID 回退，绝不串标题', async () => {
     const host = await startNotificationHost()
     const before = spawned().length
     // 制造 300 个带独立标题的会话（超过 A 的 TITLE_CACHE_MAX=256）
+    const N = 300
+    const MAX = 256          // src/index.ts TITLE_CACHE_MAX；本用例把该上界钉进契约
+    const evicted = N - MAX  // 插入序最早的 44 个会被容量淘汰
     const sessions = []
-    for (let i = 0; i < 300; i++) {
+    for (let i = 0; i < N; i++) {
       const s = host.createRoot(`t5-cap-${i}`, { title: `容量标题${i}` })
       sessions.push(s)
     }
-    // 逐个走一轮并驱动结算，验证标题不串
-    for (let i = 0; i < 300; i++) {
+    // 逐个走一轮并驱动结算：仍在缓存 → 自己的标题；已被淘汰 → 短 ID 回退。
+    // 用**首行精确相等**判定（子串包含会把 "容量标题100" 误判成含 "容量标题1"），
+    // 精确相等天然保证不串别的会话的标题（D 的"不串标题"语义保留）。
+    for (let i = 0; i < N; i++) {
       const b = spawned().length
       host.runTurn(sessions[i], { kind: 'completed', turn: 1, withStep: true })
       const toasts = taskToasts(b)
       assert.equal(toasts.length, 1, `会话 ${i} 应通知`)
       const a = argsOf(toasts[0])
-      assert.ok(
-        a.message.includes(`任务：容量标题${i}`),
-        `标题不得串位：会话 ${i} 实测 ${JSON.stringify(a.message)}`,
-      )
+      const firstLine = a.message.split('\n')[0]
+      if (i < evicted) {
+        assert.equal(
+          firstLine, `任务：会话 ${`t5-cap-${i}`.slice(0, 8)}`,
+          `会话 ${i} 标题应已被容量淘汰并短 ID 回退：${JSON.stringify(a.message)}`,
+        )
+      } else {
+        assert.equal(
+          firstLine, `任务：容量标题${i}`,
+          `会话 ${i} 标题应仍在缓存且不得串位：${JSON.stringify(a.message)}`,
+        )
+      }
       drain(b)
       await settle()   // worker 串行：必须让上一条结算完成后，下一条 spawn 才会发生
     }

@@ -1,8 +1,14 @@
 /**
- * 最小宿主契约层：对齐 @deepseek-ai/dsh-user-approval 公开类型与 Cordis waterfall 语义，
- * 避免把整套 DSH 打进插件运行时依赖树。两版宿主（0.1.5-rc.1 / 0.1.7-rc.2）的差异
- * 只有 displayReason（0.1.7-rc.2 新增，旧版请求不含该字段时按回退规则自然降级）。
- * 证据与冻结记录：docs/compat/contract-017.md。
+ * 最小宿主契约层：把本插件真正读到的宿主公开面收窄成结构化最小类型，
+ * 避免把整套 DSH 拖进插件运行时依赖树。
+ *
+ * 这里承载三类事实（冻结依据：docs/design/task-notification-contract.md）：
+ *  1) 审批 waterfall 的请求/结果词汇与展示回退链（§2.1/§2.2，证据 docs/compat/contract-017.md）；
+ *  2) 主/子会话身份判据与审批请求 → Session 解析（§2.4/§2.6，唯一判据 origin === 'subagent'）；
+ *  3) 会话标题的只读最小面（§2.5：标题只来自 session/title 事件流，**禁止**新增
+ *     `session.snapshotEvents()` 调用 —— 宿主已标记 deprecated "new calls are prohibited"）。
+ *
+ * 插件精确支持 DSH 0.1.7-rc.2；更早版本不在支持范围。
  */
 import type { ApprovalStatus } from './store.js';
 /**

@@ -202,17 +202,28 @@ export interface SessionTitleEventData {
 - 计划书 §2.3 说 "**禁止假设 session.title 存在**" — **成立**：`Session` 上没有 `title` 属性，
   只有 `header`（`SessionHeader` 不含 title）。标题**只能**从事件流取。
 
-**冻结读取顺序**：
+**冻结读取顺序（R3 修订：删除冷读，事件缓存 + 短 ID 回退）**：
 
-1. 最新 `session/title` 事件的 `data.title`（事件流增量维护）；
-2. 首次遇到某会话时，用公开 `session.snapshotEvents()` 找**最后一条** `session/title`
-   （`index.d.ts:193` `snapshotEvents(fromSeq?, toSeqExclusive?)`，公开 API）；
-3. 都没有 → 回退 `会话 <短ID>`。
+1. 实时 `session/title` 事件的 `data.title`（事件流增量维护，**唯一来源**）；
+2. 缓存里没有 → 回退 `会话 <短ID>`。
+
+> **R3 裁决（派发 §13，有实证）**：宿主已把 `snapshotEvents()` 标记为
+> `@deprecated Existing logic may remain unmigrated for now, but new calls are prohibited.`
+> （`dsh-session/lib/types/index.d.ts`，0.1.7-rc.2 实测）。
+> 本插件**不得新增**对它的调用 ⇒ 原第 2 步"首次遇到会话回读事件快照"的冷读路径**已删除**。
+> 受支持的 `SessionTitleService.get(session)` 需要宿主注入 `dsh-session-title`，本插件不假设其存在；
+> **事件缓存本身就是受支持路径**，故不引入可选标题服务。
+> **已接受限制**：插件挂载之前就已产生的标题（如只存在于 seed 历史里的标题）读不到，显示短 ID。
+> 该行为由集成测试 T-1 固化。
+>
+> **审批与完成共用同一份标题缓存与同一套隐私设置**（`taskNotificationShowTitle` 同时作用于两者），
+> 不存在第二套标题来源。
 
 - **不需要**额外标题服务，**不需要**模型调用。
 - `session.title` 属性**不存在**，禁止假设。
-- 标题缓存必须有**容量上界**与 **session/disposed 清理**（计划书 §4 A 段要求）。
+- 标题缓存必须有**容量上界**（256）与 **session/disposed 清理**（计划书 §4 A 段要求）。
 - 正常 `turn/end` 即释放本轮状态（**不只是**通知去重缓存）。
+- `latestTitleFromEvents()` 纯函数保留但标记 deprecated：**禁止**喂给它 `snapshotEvents()` 的结果。
 
 ### 2.6 审批请求 → Session 解析（PASS，目标版）— §2.7 的前置
 
@@ -295,21 +306,25 @@ SubagentStopReason = 'completed' | 'aborted' | 'error' | 'max-tokens' | 'refusal
 - **热加载中途**没有观察到 `step/start` 的轮次，首版**不补发**完成提醒。此限制写入用户文档。
 - **卸载**停止监听并丢弃待发通知，**不补播历史**。
 
-### 3.2 内容与隐私（冻结）
+### 3.2 内容与隐私（冻结，R3 修订：blocked / max-tokens 的标题与正文一并写入）
 
-主会话成功：
+主会话成功（`reason.kind === 'completed'`，且该轮观察到 `step/start`）：
 ```
 标题：本轮回复已完成
 正文：任务：<会话标题>
       Agent 已完成这一轮回复，请返回 DSH 查看。
 ```
 
-主会话错误：
-```
-标题：本轮执行出错
-正文：任务：<会话标题>
-      本轮执行失败，请返回 DSH 查看详情。
-```
+主会话异常（三者都是**独立终态**，各有独立标题与正文，**不**互相混称）：
+
+| reason.kind | 标题 | 正文第二行 |
+|---|---|---|
+| `error` | 本轮执行出错 | 本轮执行失败，请返回 DSH 查看详情。 |
+| `blocked` | 本轮执行受阻 | 本轮执行受阻，请返回 DSH 查看详情。 |
+| `max-tokens` | 本轮达到输出上限 | 本轮达到输出上限，请返回 DSH 查看详情。 |
+
+统一格式：`任务：<会话标题>\n<上表正文>`。三者都**不是成功**，不得谎报"已完成"；
+也不得把 `blocked` / `max-tokens` 归称为"运行出错"。
 
 **禁止出现在完成/错误通知中的内容**：完整回答、工具命令、提示词、凭据、绝对目录、原始错误堆栈。
 
@@ -576,7 +591,7 @@ export function createTaskNotificationSender(deps?: TaskSenderDeps): Notificatio
 |---|---|---|
 | 1 | 本地 `main` 比 tag 落后 48 commit；从 `main` 建树会退回 v0.3.0 | **已规避**：全员从 `4f6e04b` 建树 |
 | 2 | 当前运行的 DSH GUI 是 **0.1.5-rc.2**，插件 peer 声明 0.1.7-rc.2 | **风险**：本机实机验收环境与目标版不一致 |
-| 3 | 上一轮 B 残留有 1 个真实失败用例 `NF-35b`（超长工具名截断后"选择："行被挤掉） | **待 B 修复** |
+| 3 | 上一轮 B 残留有 1 个真实失败用例 `NF-35b`（超长工具名截断后"选择："行被挤掉） | **已关闭（R2）**：B 在其 R1 交付中修复，A 整合后 75/75 通过；R3 又并入 B 的 32 个对抗用例，全部通过。历史记录保留在 R1 交接书，不删除。 |
 | 4 | 上一轮残留产生于 T0 之前，未经契约核对 | **参考素材，非交付** |
 | 5 | `session/title` 不在 `dsh-session` 自身事件表，fixture 需 `dsh-session-title` | **D 须扩展 fixture** |
 | 6 | Windows 实机、真实主/子会话 | **PENDING → C/D** |
@@ -637,6 +652,6 @@ export function createTaskNotificationSender(deps?: TaskSenderDeps): Notificatio
 3. **需要接口变化**：提交 CR + 测试给 A，**不得**直接改对方文件。
 4. **测试不得启动真实 Windows 通知**；单测一律 mock spawn。
 5. **上一轮残留**（§1.3）可作参考，但必须按本契约独立核对；
-   B 必须修复 §7 的 `NF-35b` 失败用例。
+   `NF-35b` 失败用例**已由 B 修复并关闭**（见 §7）。
 6. 交付时给出：分支 + 完整 commit、修改文件、**实际执行命令与 PASS/FAIL/SKIP 计数**、
    未测项目、给 A 的最小接线例子。
