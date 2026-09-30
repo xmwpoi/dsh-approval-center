@@ -8,7 +8,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -57,6 +57,29 @@ function waitForFile(path, ms = 8000) {
 }
 
 const ID = 'abc1230456789abcdef0123456789ab'
+
+test('ISSUE-1/清理路径: 中文私有 StateDir 下 -CleanupToken 经映射命中并双清（Agent 1 发现的第二个受害者）', () => {
+  // Get-MarkerDir 与处理器同样按 ANSI 读映射；映射写侧修复后，定向清理在中文
+  // 私有 StateDir 下也应正确命中（T6 S6 只覆盖了 ASCII，未暴露此路径）。
+  // 清理路径不弹通知，可安全实跑。
+  const s = makeSandbox()
+  const tok = '1a2b3c4d5e6f4a4b8c9d0e1f2a3b4c5d'
+  try {
+    writeAnsiMapping({ LOCALAPPDATA: s.localAppData }, join(s.defaultDir, `${tok}.dir`), s.mappedDir)
+    writeFileSync(join(s.mappedDir, `${tok}.pending`), '999999\n')
+    writeFileSync(join(s.mappedDir, `${tok}.result`), 'approve\n')
+    const r = spawnSync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+      '-File', join(SCRIPTS, 'approval-toast.ps1'), '-CleanupToken', tok, '-StateDir', s.mappedDir,
+    ], { env: { ...process.env, LOCALAPPDATA: s.localAppData }, encoding: 'utf8', timeout: 60_000, windowsHide: true })
+    assert.equal(r.status, 0, `清理失败: ${r.stdout} ${r.stderr}`)
+    assert.ok((r.stdout ?? '').includes(`CLEANED token=${tok}`))
+    assert.equal(existsSync(join(s.mappedDir, `${tok}.pending`)), false, '.pending 未被定向清理')
+    assert.equal(existsSync(join(s.mappedDir, `${tok}.result`)), false, '.result 未被定向清理')
+  } finally {
+    rmSync(s.root, { recursive: true, force: true })
+  }
+})
 
 test('ISSUE-1/静态: approval-toast.ps1 的映射写入必须是 ANSI（Encoding.Default）', () => {
   // 修复就在写映射这一行上；静态断言防止未来被改回 UTF8Encoding（无 BOM UTF-8
