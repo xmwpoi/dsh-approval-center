@@ -190,6 +190,8 @@ class ApprovalStore {
 
 > **执行后更新（2026-09-30）：** 上表是契约冻结时的状态，不是发布就绪状态。T6 新包实机复测已由 C 签 G2 PASS；深层 JSON Schema 投影由 T6 S2 关闭；宿主级 V01–V08 受控测试通过。V16 完整真实子代理会话、GitHub Actions 首轮仍 PENDING。详见 [T7b 最新评估](./evidence/t7b-release-readiness.md)，不要将“Windows 实机全部用例”理解为每个 V 项均已完整执行。
 
+> **CI 首轮后更新：** 上述 G2 PASS 针对 C 当时实测的旧 SHA；首轮 CI 发现其 ANSI 映射依赖系统代码页，当前 Unicode 修复树须重新通过 CI 与 C 的受影响实机用例。CI 首轮结果为 FAIL（95/98），见 [首轮记录](./evidence/ci-first-run.md)。
+
 ## 6. 给 B/C/D 的开工说明
 
 - 共同基线：`f608abd`，从 `adapt/dsh-017-host` 分支出各自分支（`adapt/dsh-017-queue` / `adapt/dsh-017-windows` / `adapt/dsh-017-store`），不共用 node_modules。

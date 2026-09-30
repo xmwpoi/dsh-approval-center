@@ -4,7 +4,7 @@
 >
 > **G4 范围：** T6 S13 验证的是隔离安装的卸载与配置清空、生产旧库只读可读、URI/AUMID 恢复；生产 0.3.0 未被替换。下文 R1–R5 仅在升级失败时执行，当前状态为“不适用，未触发”，并非实机回装 PASS。生产升级前仍按 [升级/WAL/回滚清单](./store-and-rollback.md) 备份和逐项记录。GitHub Actions 首轮、V16 完整真实子代理会话仍 PENDING。最新门禁以 [T7b 评估](../evidence/t7b-release-readiness.md) 为准。
 >
-> README/CHANGELOG 更新后的再打包 SHA 为 `9E0E858B40EEE86E477EE15CC9F02A3347584AC97D54FB697186FD113B54D255`。与 C 已验收包比较，17/17 个运行文件逐字节相同，只有两份文档不同；见 [比对记录](../evidence/t7b-doc-only-repack.md)。C 对新 SHA 的证据适用性复审仍待完成。
+> README/CHANGELOG 更新后的再打包 SHA 为 `9E0E858B40EEE86E477EE15CC9F02A3347584AC97D54FB697186FD113B54D255`。与 C 已验收包比较，当时 17/17 个运行文件逐字节相同，只有两份文档不同；见 [比对记录](../evidence/t7b-doc-only-repack.md)。**但 Draft PR 首轮 CI 发现跨代码页缺陷，后续已再次修改脚本，此 SHA 与等价结论均只作历史记录，不能发布。**
 
 日期：2026-09-30。编制：Agent D（只读审计 + 清单交付；本文件是唯一新增文件，无任何数据文件写入）。
 用途：供 A 的 T7b 发布收口与 C 的 T6 实机执行引用，与 [store-and-rollback.md](./store-and-rollback.md)（升级/WAL 备份/回滚三清单，2fc4a25 已合入）配套。

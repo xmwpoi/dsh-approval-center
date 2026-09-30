@@ -26,7 +26,7 @@ try {
         $target = $defaultDir
         $map = Join-Path $defaultDir ($id + '.dir')
         if (Test-Path $map) {
-            $mapped = ('' + (Get-Content $map -Raw -ErrorAction SilentlyContinue)).Trim()
+            $mapped = ('' + [System.IO.File]::ReadAllText($map, [System.Text.Encoding]::Unicode)).Trim()
             if ($mapped -and ($mapped -match '^[A-Za-z]:[\\/]' -or $mapped.StartsWith('\\'))) { $target = $mapped }
         }
         if (-not (Test-Path $target)) { New-Item -ItemType Directory -Path $target -Force | Out-Null }

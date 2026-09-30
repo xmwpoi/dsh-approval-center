@@ -102,7 +102,7 @@ function Get-MarkerDir([string]$tag) {
     try {
         $map = Join-Path $defaultStateDir ($tag + '.dir')
         if (Test-Path $map) {
-            $mapped = ('' + (Get-Content $map -Raw -ErrorAction SilentlyContinue)).Trim()
+            $mapped = ('' + [System.IO.File]::ReadAllText($map, [System.Text.Encoding]::Unicode)).Trim()
             if ($mapped -and (Test-AbsolutePath $mapped)) { return $mapped }
         }
     } catch { }
@@ -311,15 +311,12 @@ try {
     # 把 .result 写进真实目录；映射必须在 Show 之前写好，否则点击可能赶在它前面。
     # 用默认目录时无需映射（处理器自己会回落到默认目录），也就不付这份额外 IO。
     #
-    # 编码必须 ANSI（Encoding.Default）：VBS 处理器的 OpenTextFile 与 PS 5.1 的
-    # Get-Content 都默认按 ANSI 读无 BOM 文件。旧版用 UTF-8 写，中文路径在处理器侧
-    # 变乱码 → 回落默认目录 → 等待方永远收不到结果 → 审批超时（T6 实测，ISSUE-1）。
-    # ANSI 写对纯 ASCII 路径字节不变，无回归风险；含当前代码页无法表示的字符的
-    # 路径仍会写成替代符——那类路径本就无法用 ANSI 协议传输，属已知限制。
+    # 映射统一写 UTF-16 LE（带 BOM），VBS 以 Unicode 打开，PS/.NET 显式按 Unicode 读。
+    # 不依赖宿主 Windows 代码页；ANSI 在英文 runner 上无法表示中文私有 StateDir。
     if ($StateDir -ne $defaultStateDir) {
         New-Item -ItemType Directory -Path $defaultStateDir -Force | Out-Null
         $mappingFile = Join-Path $defaultStateDir ($id + '.dir')
-        [System.IO.File]::WriteAllText($mappingFile, $StateDir, [System.Text.Encoding]::Default)
+        [System.IO.File]::WriteAllText($mappingFile, $StateDir, [System.Text.Encoding]::Unicode)
     }
 
     [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null

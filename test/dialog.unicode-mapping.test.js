@@ -1,13 +1,12 @@
-// ISSUE-1 回归测试：映射文件编码一致性（ANSI 写 <-> ANSI 读）。
-// 旧版 approval-toast.ps1 用 UTF-8 写 <id>.dir，VBS（OpenTextFile）/PS 5.1（Get-Content）
-// 都默认按 ANSI 读：中文 StateDir 路径被读成乱码 -> 处理器回落默认目录 -> 审批超时。
-// 修复后脚本以 [System.Text.Encoding]::Default 写映射；本测试用同一编码造夹具，
+// ISSUE-1 回归测试：映射文件统一为带 BOM 的 UTF-16 LE。
+// ANSI 修复仅在本机中文代码页上有效；英文 CI runner 无法用 ANSI 表示中文路径。
+// 修复后脚本以 [System.Text.Encoding]::Unicode 写映射；本测试用同一编码造夹具，
 // 直调两个处理器，断言结果文件落在中文+空格映射目录内。
 // 夹具全部在沙箱 LOCALAPPDATA 下，不触碰真实状态目录；不弹通知、不改注册表。
 // 运行：node --test test/dialog.unicode-mapping.test.js
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -28,23 +27,14 @@ function makeSandbox() {
   return { root, localAppData, defaultDir, mappedDir }
 }
 
-/** 用 PowerShell 以 [System.Text.Encoding]::Default 写映射（与修复后的脚本一致）。
+/** 用 PowerShell 以 [System.Text.Encoding]::Unicode 写映射（与脚本一致）。
  *  中文路径经由 env 传入（UTF-16 进程环境），避免命令行编码失真。 */
-function writeAnsiMapping(env, mappingPath, mappedDir) {
+function writeUnicodeMapping(env, mappingPath, mappedDir) {
   const r = spawnSync('powershell.exe', [
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-    '[System.IO.File]::WriteAllText($env:MAPPING_PATH, $env:MAPPED_DIR, [System.Text.Encoding]::Default)',
+    '[System.IO.File]::WriteAllText($env:MAPPING_PATH, $env:MAPPED_DIR, [System.Text.Encoding]::Unicode)',
   ], { env: { ...env, MAPPING_PATH: mappingPath, MAPPED_DIR: mappedDir }, timeout: 60_000, windowsHide: true })
-  assert.equal(r.status, 0, `ANSI 映射夹具写入失败: ${r.stderr}`)
-}
-
-/** 旧版缺陷行为对照：UTF-8 写的映射（无 BOM）在 ANSI 读取下必然乱码回落。 */
-function writeUtf8Mapping(env, mappingPath, mappedDir) {
-  const r = spawnSync('powershell.exe', [
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-    '[System.IO.File]::WriteAllText($env:MAPPING_PATH, $env:MAPPED_DIR, (New-Object System.Text.UTF8Encoding($false)))',
-  ], { env: { ...env, MAPPING_PATH: mappingPath, MAPPED_DIR: mappedDir }, timeout: 60_000, windowsHide: true })
-  assert.equal(r.status, 0, `UTF-8 映射夹具写入失败: ${r.stderr}`)
+  assert.equal(r.status, 0, `Unicode 映射夹具写入失败: ${r.stderr}`)
 }
 
 function waitForFile(path, ms = 8000) {
@@ -59,13 +49,13 @@ function waitForFile(path, ms = 8000) {
 const ID = 'abc1230456789abcdef0123456789ab'
 
 test('ISSUE-1/清理路径: 中文私有 StateDir 下 -CleanupToken 经映射命中并双清（Agent 1 发现的第二个受害者）', () => {
-  // Get-MarkerDir 与处理器同样按 ANSI 读映射；映射写侧修复后，定向清理在中文
+  // Get-MarkerDir 与处理器同样按 UTF-16 LE 读映射；定向清理在中文
   // 私有 StateDir 下也应正确命中（T6 S6 只覆盖了 ASCII，未暴露此路径）。
   // 清理路径不弹通知，可安全实跑。
   const s = makeSandbox()
   const tok = '1a2b3c4d5e6f4a4b8c9d0e1f2a3b4c5d'
   try {
-    writeAnsiMapping({ LOCALAPPDATA: s.localAppData }, join(s.defaultDir, `${tok}.dir`), s.mappedDir)
+    writeUnicodeMapping({ LOCALAPPDATA: s.localAppData }, join(s.defaultDir, `${tok}.dir`), s.mappedDir)
     writeFileSync(join(s.mappedDir, `${tok}.pending`), '999999\n')
     writeFileSync(join(s.mappedDir, `${tok}.result`), 'approve\n')
     const r = spawnSync('powershell.exe', [
@@ -81,35 +71,67 @@ test('ISSUE-1/清理路径: 中文私有 StateDir 下 -CleanupToken 经映射命
   }
 })
 
-test('ISSUE-1/静态: approval-toast.ps1 的映射写入必须是 ANSI（Encoding.Default）', () => {
-  // 修复就在写映射这一行上；静态断言防止未来被改回 UTF8Encoding（无 BOM UTF-8
-  // 会被 ANSI 读取的处理器读成乱码——正是 T6 E6 实测的 bug 形态）。
+test('ISSUE-1/静态: 映射写入必须为跨代码页的 UTF-16 LE', () => {
+  // 静态断言防止未来被改回依赖系统区域设置的 Encoding.Default。
   const source = readFileSync(join(SCRIPTS, 'approval-toast.ps1'), 'utf8')
   const line = source.split('\n').find((l) => l.includes('WriteAllText($mappingFile'))
   assert.ok(line, '找不到映射写入语句')
-  assert.ok(line.includes('[System.Text.Encoding]::Default'), `映射写入未使用 ANSI: ${line.trim()}`)
-  assert.ok(!/UTF8Encoding|New-Object System\.Text\.UTF8/.test(line), `映射写入不得为 UTF-8: ${line.trim()}`)
+  assert.ok(line.includes('[System.Text.Encoding]::Unicode'), `映射写入未使用 UTF-16 LE: ${line.trim()}`)
+  assert.ok(!/Encoding]::Default|UTF8Encoding/.test(line), `映射写入不得依赖系统代码页: ${line.trim()}`)
 })
 
-test('ISSUE-1/VBS: ANSI 映射 -> 中文+空格 StateDir 命中', () => {
+test('ISSUE-1/VBS: UTF-16 LE 映射 -> 中文+空格 StateDir 命中', async () => {
   const s = makeSandbox()
   try {
-    writeAnsiMapping({ LOCALAPPDATA: s.localAppData }, join(s.defaultDir, `${ID}.dir`), s.mappedDir)
-    spawnSync('wscript.exe', ['//B', '//Nologo', VBS, `dshapproval:approve/${ID}`], {
-      env: { ...process.env, LOCALAPPDATA: s.localAppData }, timeout: 30_000, windowsHide: true,
-    })
+    writeUnicodeMapping({ LOCALAPPDATA: s.localAppData }, join(s.defaultDir, `${ID}.dir`), s.mappedDir)
     const result = join(s.mappedDir, `${ID}.result`)
-    assert.equal(waitForFile(result), true, '中文映射目录未收到回写（ISSUE-1 回归）')
+    // wscript 是 GUI 进程；同步等待其句柄在某些 runner 上会超时，
+    // 此处以非交互结果文件为成功条件，并在完成后回收仍存活的进程。
+    await new Promise((resolve, reject) => {
+      const debugLog = join(s.root, 'wscript.debug.log')
+      const child = spawn('wscript.exe', ['//B', '//Nologo', VBS, `dshapproval:approve/${ID}`], {
+        env: {
+          ...process.env, LOCALAPPDATA: s.localAppData,
+          DSH_APPROVAL_DEBUG: '1', DSH_APPROVAL_DEBUG_LOG: debugLog,
+        }, windowsHide: true, stdio: 'ignore',
+      })
+      let done = false
+      let closed = false
+      let exitCode
+      let launchError
+      const finish = (error) => {
+        if (done) return
+        done = true
+        clearInterval(poll)
+        clearTimeout(deadline)
+        if (!closed) child.kill()
+        child.unref()
+        if (error) reject(error)
+        else resolve()
+      }
+      child.on('error', (error) => { launchError = error; finish(error) })
+      child.on('close', (code) => { closed = true; exitCode = code })
+      const poll = setInterval(() => {
+        if (!existsSync(result)) return
+        try {
+          if (readFileSync(result, 'utf8').startsWith('approve\n')) finish()
+        } catch { /* 文件正在创建，下一轮再读 */ }
+      }, 50)
+      const deadline = setTimeout(() => {
+        const log = existsSync(debugLog) ? readFileSync(debugLog, 'utf8') : '(no handler log)'
+        finish(new Error(`中文映射目录未收到回写；wscript exit=${exitCode}, error=${launchError?.message ?? 'none'}, log=${log}`))
+      }, 10_000)
+    })
     assert.equal(readFileSync(result, 'utf8').split('\n')[0].trim(), 'approve')
   } finally {
     rmSync(s.root, { recursive: true, force: true })
   }
 })
 
-test('ISSUE-1/PS 回退: ANSI 映射 -> 中文+空格 StateDir 命中', () => {
+test('ISSUE-1/PS 回退: UTF-16 LE 映射 -> 中文+空格 StateDir 命中', () => {
   const s = makeSandbox()
   try {
-    writeAnsiMapping({ LOCALAPPDATA: s.localAppData }, join(s.defaultDir, `${ID}.dir`), s.mappedDir)
+    writeUnicodeMapping({ LOCALAPPDATA: s.localAppData }, join(s.defaultDir, `${ID}.dir`), s.mappedDir)
     spawnSync('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
       '-File', PS1, '-Uri', `dshapproval:approve/${ID}`,
@@ -122,17 +144,15 @@ test('ISSUE-1/PS 回退: ANSI 映射 -> 中文+空格 StateDir 命中', () => {
   }
 })
 
-test('ISSUE-1/对照: UTF-8 旧写法仍会回落默认目录（记录处理器既有语义，不因本修复改变）', () => {
+test('ISSUE-1/协议: 映射文件有 UTF-16 LE BOM，中文路径可无损往返', () => {
   const s = makeSandbox()
   try {
-    writeUtf8Mapping({ LOCALAPPDATA: s.localAppData }, join(s.defaultDir, `${ID}.dir`), s.mappedDir)
-    spawnSync('wscript.exe', ['//B', '//Nologo', VBS, `dshapproval:approve/${ID}`], {
-      env: { ...process.env, LOCALAPPDATA: s.localAppData }, timeout: 30_000, windowsHide: true,
-    })
-    assert.equal(waitForFile(join(s.mappedDir, `${ID}.result`), 2000), false,
-      'UTF-8 映射竟被中文目录命中——处理器读取行为发生了变化，请核查')
-    assert.equal(waitForFile(join(s.defaultDir, `${ID}.result`)), true,
-      '回落路径也应正常回写（fail-safe 语义）')
+    const mapping = join(s.defaultDir, `${ID}.dir`)
+    writeUnicodeMapping({ LOCALAPPDATA: s.localAppData }, mapping, s.mappedDir)
+    const bytes = readFileSync(mapping)
+    assert.equal(bytes[0], 0xff)
+    assert.equal(bytes[1], 0xfe)
+    assert.equal(bytes.subarray(2).toString('utf16le'), s.mappedDir)
   } finally {
     rmSync(s.root, { recursive: true, force: true })
   }
