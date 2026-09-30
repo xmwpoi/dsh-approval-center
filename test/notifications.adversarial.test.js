@@ -520,3 +520,26 @@ test('AD-32: 告警不得输出 key 明文（sessionId 属于不应持久化的�
   assert.equal(overflowWarns.length, 1)
   assert.equal(overflowWarns[0].includes(SID), false, '告警不得带 sessionId 明文')
 })
+
+// ══ R4-B 更正补充（AD-33）════════════════════════════════════════════════════
+// B 在 r4-b-mapping-correction.md 用变异测试发现：NS-38 的"告警文案"守护
+// **未被 AD-13 继承**——只删掉告警调用、保留 `lastResult = 'failed'` 时，
+// AD 套件 32/32 全绿（净丢失）。本用例补上该守护：断言告警**确实产生**、
+// 含 tag 哈希、且**不含** key 明文；同时断言不重试。
+test('AD-33: 契约外 sender 结果必须产生告警（含 tag，不含 key 明文）—— NS-38 的告警守护', async () => {
+  const { service, sender, warns } = makeService({
+    sender: fakeSender({ mode: 'bogus', result: 'pending' }),
+  })
+  runTurn(service)
+  await flush()
+
+  assert.equal(service.lastResult, 'failed', '仍须归一为 failed')
+  const contractWarns = warns.filter((w) => w.includes('契约外'))
+  assert.equal(contractWarns.length, 1, '契约外结果必须产生恰好一条告警（删掉告警调用即红）')
+  assert.ok(
+    /tag=[0-9a-f]{16}/.test(contractWarns[0]),
+    `告警必须带 16 位 tag 便于定位：${contractWarns[0]}`,
+  )
+  assert.equal(contractWarns[0].includes(SID), false, '告警不得泄漏 key 明文（含 sessionId）')
+  assert.equal(sender.calls.length, 1, '不得因契约外结果自动重试')
+})
