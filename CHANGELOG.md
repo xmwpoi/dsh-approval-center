@@ -6,6 +6,14 @@
 - 对齐 `displayReason` 展示、审批队列取消/卸载、通知定向清理与 SQLite 单实例审计恢复；审计结算失败时不放行，也不显示“已批准”。
 - 目标版真实宿主非交互集成测试 21/21 通过；Windows 实机验收、正式发布与回滚结论待完成。
 
+### 重打包（T6 收口 + ISSUE-1 修复）
+
+版本号维持 `0.3.1-rc.1`，但**入包文件已变更**，故此前的候选包 SHA256 作废，须以本段对应的重打包产物为准。
+
+- **ISSUE-1（T6 实机发现，基线既有缺陷）修复**：`approval-toast.ps1` 写 `<id>.dir` 映射文件由 UTF-8（无 BOM）改为 ANSI（`[System.Text.Encoding]::Default`）。VBS 处理器的 `OpenTextFile` 与 PS 5.1 的 `Get-Content` 都默认按 ANSI 读，旧写法使**中文私有 `StateDir`** 路径被读成乱码 → 处理器回落默认目录 → 等待方永远收不到结果 → 审批超时（fail-closed）。纯 ASCII 路径字节不变，无回归；含当前代码页无法表示字符的路径仍会写成替代符，属已知限制。
+- **`-CleanupToken` 定向清理补测**：中文私有 `StateDir` 下经映射双清（`.pending` + 通知），新增 `test/dialog.unicode-mapping.test.js` 5 项回归测试并纳入 `test:unit`（93 → 98 项）。
+- **T6 实机证据归档**：`docs/compat/evidence/windows/t6/`（S1–S14 + E 系列、环境基线、恢复自检）。
+
 ## 0.3.0
 
 **破坏性变更：删除 WinForms 模态对话框，审批改为完全走 Windows 通知中心。**
