@@ -104,6 +104,25 @@ describe('任务通知 sender：参数构造与 spawn 前校验', () => {
     assert.equal(r, 'failed')
     assert.equal(h.calls.length, 0)
   })
+
+  /**
+   * R4C-D2 回归（C 实测发现）：key 类型守卫必须在 taskNotificationTag() **之前**。
+   * 顺序反了时，非字符串 key 会让 createHash.update() 抛 TypeError 并**逃出** promise
+   * （reject），而不是按契约结算成 'failed'。这里同时断言"不 reject"与"不 spawn"。
+   */
+  test('R4C-D2 非字符串 key：结算 failed 且不 reject、不 spawn（守卫早于哈希）', async () => {
+    for (const badKey of [undefined, null, 123, {}, []]) {
+      const h = harness()
+      let rejected = null
+      const p = createTaskNotificationSender(h.deps)
+        .send(MSG({ key: badKey }), new AbortController().signal)
+        .catch((error) => { rejected = error; return 'REJECTED' })
+      const r = await p
+      assert.equal(rejected, null, `key=${String(badKey)} 不得以 rejection 逃出 send()：${String(rejected)}`)
+      assert.equal(r, 'failed', `key=${String(badKey)} 必须结算为 failed`)
+      assert.equal(h.calls.length, 0, `key=${String(badKey)} 不得 spawn`)
+    }
+  })
 })
 
 describe('任务通知 sender：四路结算竞争（只结算一次，先到先得）', () => {

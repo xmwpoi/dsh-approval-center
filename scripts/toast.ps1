@@ -38,15 +38,19 @@ function Write-Diag([string]$Text) {
 }
 
 # ── 参数白名单校验（"双端校验"的脚本侧；失败 exit 1，绝不静默改成别的值）──────────
+# ⚠ 必须用**区分大小写**的 `-cnotmatch` / `-cne`：PowerShell 的 `-notmatch` / `-ne` 默认
+#   大小写不敏感，而 Node 侧白名单是 /^[0-9a-f]{16}$/（只收小写）与字面量 'dsh-task'。
+#   实测：'AABBCCDDEEFF0011' 在 `-notmatch` 下**通过**，却被 Node 侧拒绝 ⇒ "双端校验"
+#   在大小写维度失效，大写 Tag 会真的投递出去（R4C-D1，已复现）。
 if ([string]::IsNullOrEmpty($Title)) {
     Write-Diag 'TOAST FAILED: -Title is required'
     exit 1
 }
-if ($Tag -ne '' -and $Tag -notmatch '^[0-9a-f]{16}$') {
+if ($Tag -cne '' -and $Tag -cnotmatch '^[0-9a-f]{16}$') {
     Write-Diag 'TOAST FAILED: -Tag must match ^[0-9a-f]{16}$'
     exit 1
 }
-if ($Group -ne '' -and $Group -ne 'dsh-task') {
+if ($Group -cne '' -and $Group -cne 'dsh-task') {
     Write-Diag 'TOAST FAILED: -Group must be dsh-task'
     exit 1
 }

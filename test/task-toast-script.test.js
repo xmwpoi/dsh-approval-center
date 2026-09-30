@@ -122,4 +122,39 @@ describe('toast.ps1：参数校验路径（真实 PS5.1，均在弹 Toast 之前
     const r = run(['-Title', 'T', '-Message', 'm', '-Sound', 'bogus'])
     assert.notEqual(r.status, 0, '非法 Sound 不得以 exit 0 通过')
   })
+
+  /**
+   * R4C-D1 回归（C 实测发现，已复现）：PowerShell 的 `-notmatch` / `-ne` **大小写不敏感**，
+   * 而 Node 侧白名单是 /^[0-9a-f]{16}$/（只收小写）与字面量 'dsh-task'。
+   * 用大小写不敏感算符时，'AABBCCDDEEFF0011' 会被脚本**接受**并真的投递出去，
+   * "双端校验"（T0 §4.4）在大小写维度失效。必须用 `-cnotmatch` / `-cne`。
+   */
+  test('R4C-D1 大写 Tag 必须 exit 1（脚本侧须区分大小写，与 Node 白名单一致）', () => {
+    const r = run(['-Title', 'T', '-Message', 'm', '-Tag', 'AABBCCDDEEFF0011'])
+    assert.equal(r.status, 1, `大写 hex Tag 必须被拒（否则双端校验失效）：stdout=${String(r.stdout ?? '')}`)
+    assert.ok(String(r.stdout ?? '').includes('TOAST FAILED'))
+  })
+
+  test('R4C-D1 大写 Group 必须 exit 1（dsh-task 是区分大小写的字面量）', () => {
+    const r = run(['-Title', 'T', '-Message', 'm', '-Group', 'DSH-TASK'])
+    assert.equal(r.status, 1, '大写 Group 必须被拒')
+  })
+
+  test('R4C-D1 混合大小写 Tag 也必须 exit 1', () => {
+    const r = run(['-Title', 'T', '-Message', 'm', '-Tag', 'aAbBcCdDeEfF0011'])
+    assert.equal(r.status, 1, '混合大小写 Tag 必须被拒')
+  })
+
+  test('R4C-D1 源码使用区分大小写的算符（防回退到 -notmatch/-ne）', () => {
+    const code = readFileSync(SCRIPT, 'utf8').split(/\r?\n/).filter((l) => !/^\s*#/.test(l)).join('\n')
+    // 校验必须用区分大小写形式
+    assert.ok(/-cnotmatch '\^\[0-9a-f\]\{16\}\$'/.test(code), 'Tag 校验必须用 -cnotmatch')
+    assert.ok(/-cne 'dsh-task'/.test(code), 'Group 校验必须用 -cne')
+    // 反例：大小写不敏感的**校验**算符不得再出现。
+    // 注意：`$Tag -ne ''` 这类**空值判断**（用于缺省回退随机 GUID / dsh-result）是无害的
+    // —— 校验已在更早的 L49/L53 用 -cne 挡过，走到那里时 Tag 要么是 '' 要么是合法小写 hex。
+    // 因此只禁止 `-notmatch`（唯一的模式校验算符）与 `-ne 'dsh-task'`（组名字面量比较）。
+    assert.ok(!/-notmatch/.test(code), '不得再出现大小写不敏感的 -notmatch（须用 -cnotmatch）')
+    assert.ok(!/-ne 'dsh-task'/.test(code), '不得再出现大小写不敏感的 -ne 组名比较（须用 -cne）')
+  })
 })
