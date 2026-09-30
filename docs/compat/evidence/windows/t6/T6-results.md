@@ -2,6 +2,12 @@
 
 > ⚠️ **声明**：本模板填写完成前不构成任何"实机通过"证据；PENDING 不得被标成 PASS。
 
+> **✅ G2 收口结论（2026-09-30 14:45，Agent C）**：见文末 §7 复测轮。
+> **结论：G2 Windows 实机验收 PASS**——基于新包
+> `dsh-approval-center-0.3.1-rc.1-t6-issue1.tgz`（SHA256 `9F13E71BF14F26D9D4840032DA3C5409CBCE43F93CBA47BA0F61B947E25ECFA8`），
+> T6 首轮的唯一 FAIL（ISSUE-1 中文 StateDir）已实机复测通过；残留 PENDING（V16 真实子代理会话、CI 首轮）
+> 均不阻断核心审批/取消/并发/重载语义，须在 README/发布说明中如实声明。
+
 ## 头部字段（执行时填写）
 
 | 字段 | 值 |
@@ -80,3 +86,30 @@ S3–S12 的 E 系列通过**协议激活**（`explorer.exe "dshapproval:approve
 
 - 执行人：Agent C
 - 时段：2026-09-30 12:59–13:30（独占）
+
+## 7. 复测轮（2026-09-30 14:34–14:45，新包，独占时段）
+
+| 项 | 值 |
+|---|---|
+| 新包 | `D:\codex\dsh-approval-center-0.3.1-rc.1-t6-issue1.tgz` |
+| SHA256 | `9F13E71BF14F26D9D4840032DA3C5409CBCE43F93CBA47BA0F61B947E25ECFA8`（实测一致 ✓，由 Agent 3 构建，merge commit c86c66a/70cb25c，HEAD 11f55c2） |
+| 包内容核验 | 19 条目；包内 approval-toast.ps1:322 已是 `[System.Text.Encoding]::Default`（UTF8Encoding 仅剩日志/PID 两个无害行）；BOM EF BB BF 完好 |
+| 桌面复审 | test:unit 含全部 8 个 test 文件（Agent 3 修复的接线缺口确认：unicode-mapping 已纳入，98 项口径成立） |
+
+| 用例 | 操作 | 结果 |
+| --- | --- | --- |
+| **E6-R（T6 唯一 FAIL 项）** | 新包 + 中文+空格 StateDir 端到端：真实 toast → 协议激活 approve | **exit 0 ✓**；映射目录内结果自清；默认目录无孤儿——**ISSUE-1 修复实机生效** |
+| R2 | ASCII StateDir reject | exit 1 ✓ |
+| R3 | 0.6s 强杀 → .pending+result 双残留 → -CleanupToken | 双清 exit 0 ✓，residual=0 |
+
+- 恢复：URI/AUMID 逐字恢复进入时值（本轮=生产路径 `C:\Users\A\.dsh\profiles\web\...`，SELF-CHECK PASS + 独立 reg query 佐证）。
+  restore-uri.ps1 自检已改为"从 .reg 备份提取期望值+归一化比对"（硬编码期望值过期误报的教训已写入脚本头注释）。
+- 通知中心：dsh-approval 组残留 0；总数 11（3 条进入时基线 + 8 条无法归属的 dsh-result，维持保留）。
+- 测试 StateDir 全空；测试安装已卸载（隔离 profile 恢复空插件状态）。
+- **独占时段已释放（14:45）**。
+
+### G2 结论明细
+- 通道层：T6 首轮 E 系列 + 本轮 E6-R/R2/R3 全 PASS。
+- 宿主层：Agent 2 宿主级证据（PASS 8）经 C 复审通过；V16 真实子代理会话 PENDING（无测试凭据）。
+- 自动层：G1 第 3 轮 PASS（98/98 unit + 21/21 integration + 19 条目三方全等，Agent 3）。
+- 未阻断但须声明的 PENDING：V16 真实会话、CI 首轮（需 PR 或推 main 触发）、V04/V08 大批次仅受控小批次覆盖。
