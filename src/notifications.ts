@@ -508,6 +508,10 @@ export class NotificationService {
    */
   observe(event: TurnEventInput): NotificationMessage | null {
     if (this.state !== 'accepting') return null
+    // 适配器输出的形状防御：TS 类型管不到 JS 调用方（本插件 index.ts 虽有同样的
+    // 前置判断，但本模块是独立边界，D 的集成测试与未来调用方不一定都过它）。
+    // 缺 sessionId 会在 Map 里建出 undefined 键、并让去重 key 变成 "undefined:3"。
+    if (typeof event?.sessionId !== 'string' || event.sessionId === '') return null
     // 子代理 / 委派子会话：本插件一律不通知（计划 §2.1/§2.2）。
     // 顺手丢弃可能存在的轮次状态，避免 continuation 复用 sessionId 时串轮。
     if (event.origin === 'subagent') {
@@ -543,6 +547,13 @@ export class NotificationService {
         if (message === null) return null
         return this.enqueue(message) ? message : null
       }
+
+      // 未知 kind（宿主 TurnEndReasonMap 可被插件合并扩展 / 适配器转发新值）：
+      // 静默丢弃。**必须有这条 default**：冻结签名是 `NotificationMessage | null`，
+      // 没有它函数会隐式返回 undefined，而 `undefined !== null` 为真——调用方会把
+      // undefined 当成一条有效消息（对抗测试 AD-30 的红例）。
+      default:
+        return null
     }
   }
 
@@ -554,8 +565,10 @@ export class NotificationService {
   enqueue(message: NotificationMessage): boolean {
     if (this.state !== 'accepting') return false
     if (this.pending.length >= this.maxPending) {
+      // 告警只带 Tag（key 的哈希），不带 key 明文：key 含 sessionId，
+      // 与 sender 侧"诊断只记 tag 不记正文/标识"的口径保持一致（T0 §4.4）。
       this.warnRateLimited(
-        `通知队列已满（上限 ${this.maxPending}），丢弃最新一条（key=${message.key}）；不重试`,
+        `通知队列已满（上限 ${this.maxPending}），丢弃最新一条（tag=${notificationTag(message.key)}）；不重试`,
       )
       return false
     }
@@ -623,7 +636,7 @@ export class NotificationService {
       this.activeAbort = controller
       let settled = false
 
-      const finish = (result: SendResult): void => {
+      const finish = (rawResult: SendResult): void => {
         if (settled) return
         settled = true
         if (this.activeTimer !== undefined) {
@@ -632,7 +645,15 @@ export class NotificationService {
         }
         this.activeAbort = undefined
         this.activeFinish = undefined
-        this.lastResult = result
+        // sender 返回契约外的值（实现 bug / JS 调用方）按 failed 处理并告警：
+        // T0 §4.1 把 SendResult 冻结为封闭三值，接受原值会让 lastResult 携带
+        // 词汇表外的状态（对抗测试 AD-13 的红例）。绝不放大成用户可见动作。
+        if (rawResult === 'submitted' || rawResult === 'aborted' || rawResult === 'failed') {
+          this.lastResult = rawResult
+        } else {
+          this.warn(`通知 sender 返回契约外的结果 ${String(rawResult)}，按 failed 处理（tag=${notificationTag(message.key)}）`)
+          this.lastResult = 'failed'
+        }
         resolve()
       }
       this.activeFinish = finish
@@ -650,15 +671,15 @@ export class NotificationService {
         this.sentCount++
         promise = this.sender.send(message, controller.signal)
       } catch (error) {
-        // sender 同步抛出不得逃进宿主事件回调
-        this.warn(`通知发送同步失败（key=${message.key}）: ${String(error)}`)
+        // sender 同步抛出不得逃进宿主事件回调；诊断只记 tag 不记 key 明文
+        this.warn(`通知发送同步失败（tag=${notificationTag(message.key)}）: ${String(error)}`)
         finish('failed')
         return
       }
       Promise.resolve(promise).then(
         (result) => finish(result),
         (error) => {
-          this.warn(`通知发送失败（key=${message.key}）: ${String(error)}`)
+          this.warn(`通知发送失败（tag=${notificationTag(message.key)}）: ${String(error)}`)
           finish('failed')
         },
       )
