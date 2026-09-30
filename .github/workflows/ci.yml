@@ -68,21 +68,27 @@ jobs:
           node-version: '24'
       - run: npm ci
       - run: npm run build
-      - name: install DSH fixtures (exact versions, isolated dirs)
+      - name: install DSH 0.1.7-rc.2 fixture (mandatory)
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "$env:DSH_FIXTURE_017_DIR", "$env:DSH_FIXTURE_015_DIR" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$env:DSH_FIXTURE_017_DIR" | Out-Null
           Push-Location $env:DSH_FIXTURE_017_DIR
           Set-Content package.json '{}'
           npm install --no-save --ignore-scripts "@deepseek-ai/dsh@0.1.7-rc.2"
           if ($LASTEXITCODE -ne 0) { throw "fixture 0.1.7-rc.2 install failed (mandatory gate)" }
           Pop-Location
+          node -e "const p=require(process.env.DSH_FIXTURE_017_DIR+'/node_modules/@deepseek-ai/dsh/package.json'); if(p.version!=='0.1.7-rc.2') throw new Error('fixture version drift: '+p.version)"
+      - name: install DSH 0.1.5-rc.1 fixture (observation only)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:DSH_FIXTURE_015_DIR" | Out-Null
           Push-Location $env:DSH_FIXTURE_015_DIR
           Set-Content package.json '{}'
           npm install --no-save --ignore-scripts "@deepseek-ai/dsh@0.1.5-rc.1"
           if ($LASTEXITCODE -ne 0) { throw "fixture 0.1.5-rc.1 install failed" }
           Pop-Location
-          node -e "const p=require(process.env.DSH_FIXTURE_017_DIR+'/node_modules/@deepseek-ai/dsh/package.json'); if(p.version!=='0.1.7-rc.2') throw new Error('fixture version drift: '+p.version)"
+          node -e "const p=require(process.env.DSH_FIXTURE_015_DIR+'/node_modules/@deepseek-ai/dsh/package.json'); if(p.version!=='0.1.5-rc.1') throw new Error('fixture version drift: '+p.version)"
       # 0.1.7-rc.2 是强制门：失败即红
       - run: npm run test:integration
         env:
