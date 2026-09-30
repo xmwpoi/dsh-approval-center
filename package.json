@@ -62,8 +62,10 @@
     "prepare": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
-    "test": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --test --test-concurrency=1 test/host-contract.test.js test/queue.test.js test/store.test.js test/dialog.test.js test/dialog.scripts.test.js test/dialog.cleanup.test.js test/dialog.uri-handler.test.js",
+    "test:integration": "node --test --test-concurrency=1 test/integration/",
     "test:approval": "node test/approval.test.js",
-    "typecheck": "tsc --noEmit"
+    "test": "npm run typecheck && npm run test:unit && npm run test:integration"
   }
 }

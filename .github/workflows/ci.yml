@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# 分层门禁（计划书 §7 / contract-017.md）：
+#   job check        — 构建、类型、单测（mock 层）、脚本字节级编码 + PS5.1 解析
+#   job integration  — 真实宿主 fixture 非交互集成：0.1.7-rc.2 为强制门，
+#                      0.1.5-rc.1 仅回归观察（continue-on-error，不构成支持承诺）
+#   人工 Toast 测试（test:approval）不入 CI。
+
 jobs:
   check:
     runs-on: windows-latest
@@ -14,8 +20,12 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci
+      - run: npm run typecheck
       - run: npm run build
-      - run: npm test
+      # 单测里的 dialog.scripts.test.js 用 powershell.exe（真实 5.1）做
+      # Parser::ParseFile 语法门禁——windows-latest 自带 5.1，满足
+      # "不能用 pwsh 解析代替实际执行环境"的要求。
+      - run: npm run test:unit
 
       # 这个插件的功能正确性依赖脚本的字节级编码：
       #   .ps1 含非 ASCII 时必须带 UTF-8 BOM（否则 PS 5.1 按 ANSI 解码 → 语法错误 →
@@ -42,3 +52,44 @@ jobs:
           }
           if ($fail -gt 0) { throw "$fail script encoding/syntax gate(s) failed" }
           Write-Host 'script encoding gates passed'
+
+  integration:
+    runs-on: windows-latest
+    needs: check
+    env:
+      # B 的集成测试从此处读取已固定版本的宿主 fixture（contract-017.md §1 的
+      # integrity 由 npm 校验；不要用 peer 自动安装，也不要解析移动中的 main）
+      DSH_FIXTURE_017_DIR: ${{ github.workspace }}\.fixture\dsh-0.1.7-rc.2
+      DSH_FIXTURE_015_DIR: ${{ github.workspace }}\.fixture\dsh-0.1.5-rc.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: npm run build
+      - name: install DSH fixtures (exact versions, isolated dirs)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:DSH_FIXTURE_017_DIR", "$env:DSH_FIXTURE_015_DIR" | Out-Null
+          Push-Location $env:DSH_FIXTURE_017_DIR
+          Set-Content package.json '{}'
+          npm install --no-save --ignore-scripts "@deepseek-ai/dsh@0.1.7-rc.2"
+          if ($LASTEXITCODE -ne 0) { throw "fixture 0.1.7-rc.2 install failed (mandatory gate)" }
+          Pop-Location
+          Push-Location $env:DSH_FIXTURE_015_DIR
+          Set-Content package.json '{}'
+          npm install --no-save --ignore-scripts "@deepseek-ai/dsh@0.1.5-rc.1"
+          if ($LASTEXITCODE -ne 0) { throw "fixture 0.1.5-rc.1 install failed" }
+          Pop-Location
+          node -e "const p=require(process.env.DSH_FIXTURE_017_DIR+'/node_modules/@deepseek-ai/dsh/package.json'); if(p.version!=='0.1.7-rc.2') throw new Error('fixture version drift: '+p.version)"
+      # 0.1.7-rc.2 是强制门：失败即红
+      - run: npm run test:integration
+        env:
+          DSH_FIXTURE_VERSION: 0.1.7-rc.2
+      # 0.1.5-rc.1 仅回归观察：失败只告警，不构成"正式支持旧版"的证据
+      - name: regression observe (0.1.5-rc.1, non-blocking)
+        run: npm run test:integration
+        env:
+          DSH_FIXTURE_VERSION: 0.1.5-rc.1
+        continue-on-error: true
