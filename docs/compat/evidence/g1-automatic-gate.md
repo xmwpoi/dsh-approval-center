@@ -564,3 +564,11 @@ git rev-list --count origin/main..HEAD → 27
 - **未修改 `src/`、`scripts/`、`test/`**——`scripts/approval-toast.ps1` 与 `test/dialog.unicode-mapping.test.js` 的变更全部来自 windows 分支合并带入，非本轮直接编辑。
 - 集成测试通知通道仍为 **mock spawn**；**真实 Toast / URI 点击属 G2（Agent C）范围**，本文件不作实机通过声明。
 - **新包未经 Agent C 用新包复审 + 实机重测（E6/V17）前，不得称"验收通过"。**
+
+## 20. 远端 CI：跨代码页修复后 G1 PASS（2026-09-30）
+
+首轮 PR CI `760e5b4` 为 95/98，暴露 ANSI 映射对系统代码页的依赖；详见 [CI 分轮记录](./ci-first-run.md)。此失败不改写前述本机历史 PASS，但阻止复用旧候选签发。
+
+Unicode 修复 commit `637163f667769307d02e68fdfa71f864a38d5b94` 的 [第二轮 Actions](https://github.com/xmwpoi/dsh-approval-center/actions/runs/36707444272) 已成功：`check` 安装/typecheck/build、98/98 单测、编码/语法门 PASS；`integration` 两版精确 fixture 安装 PASS，目标版 21/21 PASS，0 fail/skip。测试发生在远端 Windows runner；本机通知脚本测试因用户反馈提示音暂停。
+
+这关闭了“CI 无首轮记录”的阻断，**不代替修改运行脚本后的新包 G2 实机复测**。新包 SHA/G3 记录及 C 签收见最新 [T7b 评估](./t7b-release-readiness.md)。

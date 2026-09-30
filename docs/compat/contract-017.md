@@ -192,6 +192,8 @@ class ApprovalStore {
 
 > **CI 首轮后更新：** 上述 G2 PASS 针对 C 当时实测的旧 SHA；首轮 CI 发现其 ANSI 映射依赖系统代码页，当前 Unicode 修复树须重新通过 CI 与 C 的受影响实机用例。CI 首轮结果为 FAIL（95/98），见 [首轮记录](./evidence/ci-first-run.md)。
 
+> **CI 第二轮更新：** Unicode 修复 `637163f` 已通过远端 98/98 单测、21/21 目标集成，0 fail/skip；CI 阻断已解除，新包 G2 仍待 C。执行状态以 T7b 评估为准。
+
 ## 6. 给 B/C/D 的开工说明
 
 - 共同基线：`f608abd`，从 `adapt/dsh-017-host` 分支出各自分支（`adapt/dsh-017-queue` / `adapt/dsh-017-windows` / `adapt/dsh-017-store`），不共用 node_modules。

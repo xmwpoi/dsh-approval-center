@@ -4,13 +4,13 @@
 
 - 将宿主 peer 精确限定为 DSH `0.1.7-rc.2`；保留现有 Windows 通知架构。
 - 对齐 `displayReason` 展示、审批队列取消/卸载、通知定向清理与 SQLite 单实例审计恢复；审计结算失败时不放行，也不显示“已批准”。
-- 目标版真实宿主非交互集成测试本地 21/21 通过；首轮 GitHub Actions 单测 95/98，通过检查前不得发布。V16 完整真实子代理会话及生产升级后回装演练仍待完成。
+- GitHub Actions 修复后通过 98/98 单测、21/21 目标版真实宿主非交互集成（0 fail、0 skip）；首轮 CI 的 95/98 失败记录保留在仓库证据中。新包受影响的 Windows 通知/URI 实机复测待签收；V16 完整真实子代理会话及生产升级后回装演练仍待完成。
 
 ### 重打包（T6 收口 + ISSUE-1 修复）
 
 版本号维持 `0.3.1-rc.1`，但**入包文件已变更**，故此前的候选包 SHA256 作废，须以本段对应的重打包产物为准。
 
-- **ISSUE-1（T6 实机发现，基线既有缺陷）后续修正**：首轮修复把 `<id>.dir` 映射改写为 ANSI，在中文本机代码页实机通过，但英文 Windows CI 无法用 ANSI 表示中文私有 `StateDir`。当前适配分支改用带 BOM 的 UTF-16 LE，并让 VBS/PowerShell 处理器与清理路径显式按同一格式读取；此修正尚待 CI 与实机重新签收。
+- **ISSUE-1（T6 实机发现，基线既有缺陷）后续修正**：首轮修复把 `<id>.dir` 映射改写为 ANSI，在中文本机代码页实机通过，但英文 Windows CI 无法用 ANSI 表示中文私有 `StateDir`。现改用带 BOM 的 UTF-16 LE，并让 VBS/PowerShell 处理器与清理路径显式按同一格式读取；远端 Windows CI 已通过，受影响实机路径待重新签收。
 - **`-CleanupToken` 定向清理补测**：中文私有 `StateDir` 下经映射双清（`.pending` + 通知），新增 `test/dialog.unicode-mapping.test.js` 5 项回归测试并纳入 `test:unit`（93 → 98 项）。
 - **T6 实机证据归档**：`docs/compat/evidence/windows/t6/`（S1–S14 + E 系列、环境基线、恢复自检）。
 
