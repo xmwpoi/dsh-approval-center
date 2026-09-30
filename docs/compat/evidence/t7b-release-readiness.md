@@ -1,4 +1,5 @@
 # T7b 发布就绪评估
+n> **已被取代**：本文件的候选 SHA 与门禁状态已由 [final-release-evaluation.md](./final-release-evaluation.md)（Unicode 轮，SHA `7002324B…`）取代，仅作历史记录。
 
 日期：2026-09-30。本页记录最新门禁；T6 首轮失败及旧包 SHA 保留在 [T6 原始记录](./windows/t6/T6-results.md) 与 [G1 分轮记录](./g1-automatic-gate.md) 中，不作为当前候选结论。
 
