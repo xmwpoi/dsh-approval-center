@@ -18,6 +18,8 @@ import {
   RESULT_LABEL,
   STORE_STATUS,
   agentIdOf,
+  approvalResultLabel,
+  effectiveDialogOutcome,
   matchTool,
   selectDisplayReason,
   subagentEndLabel,
@@ -162,6 +164,9 @@ export function apply(ctx: CordisLikeContext, config: Config): void {
       console.warn(`[dsh-approval-center] 审批通道异常: ${String(error)}`)
       outcome = 'unavailable'
     }
+    // 关闭来源消歧：close() 中止的活动 worker 到达时队列已 closed，那是插件停机
+    // 而非宿主撤回（§4.5）；宿主侧早已自行结算 cancelled，这里怎么报都安全。
+    outcome = effectiveDialogOutcome(outcome, queue.state !== 'accepting')
     let settleFailed = false
     try {
       store?.settle(requestId, STORE_STATUS[outcome])
@@ -181,14 +186,8 @@ export function apply(ctx: CordisLikeContext, config: Config): void {
       hostOutcome = 'unavailable'
     }
     if (cfg.notifyOnApprovalResult ?? false) {
-      // 结果回执进 Windows 通知中心。best-effort：通知平台故障/速率限制只会
-      // 产生 stderr 告警（见 showToast），不影响已结算的审批结果。
-      const label =
-        outcome === 'timeout'
-          ? timeoutAction === 'approve'
-            ? '超时无人应答（已自动批准）'
-            : '超时无人应答（已自动拒绝）'
-          : RESULT_LABEL[outcome]
+      // 文案与实际上报一致：降级后不得再展示"已批准"（approvalResultLabel 处理 settleFailed）
+      const label = approvalResultLabel(outcome, { timeoutAction, settleFailed })
       showToast('审批结果', `${req.toolName}：${label}（代理 ${shortId(agentId)}）`)
     }
     return hostOutcome

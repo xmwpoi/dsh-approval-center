@@ -8,6 +8,8 @@ import {
   STORE_STATUS,
   APPROVAL_STATUSES,
   agentIdOf,
+  approvalResultLabel,
+  effectiveDialogOutcome,
   matchTool,
   selectDisplayReason,
   subagentEndLabel,
@@ -110,4 +112,42 @@ test('subagentEndLabel：缺失与未知 stopReason 的回退', () => {
   assert.equal(subagentEndLabel(undefined), '已结束')
   assert.equal(subagentEndLabel(''), '已结束')
   assert.equal(subagentEndLabel('some-new-reason'), '已结束（some-new-reason）')
+})
+
+test('effectiveDialogOutcome：队列已关闭时的 cancelled 改判 unavailable（不谎报宿主撤回）', () => {
+  // 插件 close() 中止的活动 worker：cancelled → unavailable
+  assert.equal(effectiveDialogOutcome('cancelled', true), 'unavailable')
+  // 队列未关闭（accepting）：真实的宿主撤回保持 cancelled
+  assert.equal(effectiveDialogOutcome('cancelled', false), 'cancelled')
+})
+
+test('effectiveDialogOutcome：关闭期其他结果不受影响（真实用户决策不抹除）', () => {
+  assert.equal(effectiveDialogOutcome('allowed-once', true), 'allowed-once')
+  assert.equal(effectiveDialogOutcome('rejected', true), 'rejected')
+  assert.equal(effectiveDialogOutcome('timeout', true), 'timeout')
+  assert.equal(effectiveDialogOutcome('unavailable', true), 'unavailable')
+  assert.equal(effectiveDialogOutcome('allowed-once', false), 'allowed-once')
+})
+
+test('approvalResultLabel：审计结算失败后不得展示"已批准"', () => {
+  const label = approvalResultLabel('allowed-once', { timeoutAction: 'reject', settleFailed: true })
+  assert.match(label, /审计结算失败/)
+  assert.doesNotMatch(label, /^已批准$/)
+  // 超时自动批准路径同样不得在结算失败后展示为已放行
+  const label2 = approvalResultLabel('timeout', { timeoutAction: 'approve', settleFailed: true })
+  assert.match(label2, /超时无人应答（已自动批准）/)
+  assert.match(label2, /审计结算失败/)
+})
+
+test('approvalResultLabel：结算失败的非放行结果附带失败说明，语义保留', () => {
+  assert.match(approvalResultLabel('rejected', { timeoutAction: 'reject', settleFailed: true }), /已拒绝/)
+  assert.match(approvalResultLabel('cancelled', { timeoutAction: 'reject', settleFailed: true }), /请求方已取消/)
+  assert.match(approvalResultLabel('timeout', { timeoutAction: 'reject', settleFailed: true }), /超时无人应答（已自动拒绝）/)
+})
+
+test('approvalResultLabel：正常路径文案不变', () => {
+  assert.equal(approvalResultLabel('allowed-once', { timeoutAction: 'reject', settleFailed: false }), '已批准')
+  assert.equal(approvalResultLabel('rejected', { timeoutAction: 'reject', settleFailed: false }), '已拒绝')
+  assert.equal(approvalResultLabel('timeout', { timeoutAction: 'reject', settleFailed: false }), '超时无人应答（已自动拒绝）')
+  assert.equal(approvalResultLabel('timeout', { timeoutAction: 'approve', settleFailed: false }), '超时无人应答（已自动批准）')
 })

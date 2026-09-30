@@ -59,6 +59,23 @@ export declare const HOST_OUTCOME: Record<DialogOutcome, ApprovalOutcome>;
 export declare const STORE_STATUS: Record<DialogOutcome, ApprovalStatus>;
 /** 弹窗内部结果 → 通知中心回执文案 */
 export declare const RESULT_LABEL: Record<DialogOutcome, string>;
+/**
+ * 关闭来源消歧（contract-017.md §4.5）：queue.close() 中止的活动 worker 会以
+ * 'cancelled' 结算，但那是插件自己的停机中止而非宿主撤回——宿主撤回时宿主早已
+ * 自行结算 cancelled 并丢弃迟到应答（§2.3）。因此队列已关闭时到达的 'cancelled'
+ * 必须改判 'unavailable'，不把插件退出谎报为宿主撤回。
+ * pluginClosed 取 queue.state !== 'accepting'（close 先落 closed 再 abort，时序可靠；
+ * 与宿主撤回同时发生的窄竞态窗口按关闭处理，宿主侧结果不受影响）。
+ */
+export declare function effectiveDialogOutcome(outcome: DialogOutcome, pluginClosed: boolean): DialogOutcome;
+/**
+ * 审批结果通知文案：必须与实际上报结果一致。审计结算失败后任何降级
+ * （批准 → unavailable，§3.4）都不得再向用户展示"已批准"。
+ */
+export declare function approvalResultLabel(outcome: DialogOutcome, opts: {
+    timeoutAction: 'reject' | 'approve';
+    settleFailed: boolean;
+}): string;
 /** 审计状态词汇（与 store.ts ApprovalStatus 对齐的本地约束） */
 export declare const APPROVAL_STATUSES: readonly ["pending", "approved", "rejected", "timeout", "dismissed", "cancelled", "unavailable"];
 export declare function subagentEndLabel(stopReason: string | undefined): string;
