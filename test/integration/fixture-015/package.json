@@ -1,0 +1,24 @@
+{
+  "name": "dsh-approval-center-t5-fixture-015",
+  "private": true,
+  "description": "T5 集成测试的旧版回归观察 fixture：DSH 0.1.5-rc.1 精确版本（与目标版 fixture/ 分开，用于旧版 payload 字段集与导入面回归观察）。版本与 integrity 对应 docs/compat/contract-017.md §1 的旧版基准。",
+  "type": "module",
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-scope": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-user-approval": "0.1.5-rc.1"
+  },
+  "overrides": {
+    "@deepseek-ai/dsh-agent": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-invariants": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-session-projection": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-brand": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-timeout": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-util-crypto": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-util-values": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.5-rc.1"
+  }
+}
