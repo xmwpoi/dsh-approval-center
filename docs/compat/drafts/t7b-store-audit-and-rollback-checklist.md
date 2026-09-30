@@ -1,5 +1,11 @@
 # T7b 存储审计与回滚清单（Agent D）
 
+> **2026-09-30 T7b 收口注记：下文 §0–§5 是 D 对首轮旧包 `7CE7…F819D` 的历史只读审计，表内的“待 T6”和旧 SHA 不适用于最终候选。** 当前实机验收包为 `D:\codex\dsh-approval-center-0.3.1-rc.1-t6-issue1.tgz`，SHA256 `9F13E71BF14F26D9D4840032DA3C5409CBCE43F93CBA47BA0F61B947E25ECFA8`。修复 ISSUE-1 只改通知脚本与相关测试，存储运行代码未改；G1 第 3 轮 98/98 单测、21/21 集成与 19 条目一致性通过，C 的 [T6 §7 复测](../evidence/windows/t6/T6-results.md) G2 PASS。旧包已作废，不得依本页历史 P5 使用。
+>
+> **G4 范围：** T6 S13 验证的是隔离安装的卸载与配置清空、生产旧库只读可读、URI/AUMID 恢复；生产 0.3.0 未被替换。下文 R1–R5 仅在升级失败时执行，当前状态为“不适用，未触发”，并非实机回装 PASS。生产升级前仍按 [升级/WAL/回滚清单](./store-and-rollback.md) 备份和逐项记录。GitHub Actions 首轮、V16 完整真实子代理会话仍 PENDING。最新门禁以 [T7b 评估](../evidence/t7b-release-readiness.md) 为准。
+>
+> README/CHANGELOG 更新后的再打包 SHA 为 `9E0E858B40EEE86E477EE15CC9F02A3347584AC97D54FB697186FD113B54D255`。与 C 已验收包比较，17/17 个运行文件逐字节相同，只有两份文档不同；见 [比对记录](../evidence/t7b-doc-only-repack.md)。C 对新 SHA 的证据适用性复审仍待完成。
+
 日期：2026-09-30。编制：Agent D（只读审计 + 清单交付；本文件是唯一新增文件，无任何数据文件写入）。
 用途：供 A 的 T7b 发布收口与 C 的 T6 实机执行引用，与 [store-and-rollback.md](./store-and-rollback.md)（升级/WAL 备份/回滚三清单，2fc4a25 已合入）配套。
 
