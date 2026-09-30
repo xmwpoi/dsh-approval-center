@@ -266,3 +266,301 @@ git rev-list --count origin/main..HEAD  →  21
 - 本轮**未修改 `src/`、`scripts/`、`test/`**；仅新增本证据文件。工作区保持干净。
 - 集成测试的通知通道为 **mock spawn**（`spawn-shim`），但 `ApprovalService`、Cordis waterfall、SQLite 审计、队列与卸载均为**真实实现**；**真实 Toast / URI 点击属 G2（Agent C 实机）范围**，本文件不作实机通过声明。
 - 新包未经 Agent C 复审 + 实机重测（E6）前，**不得称"验收通过"**。
+
+---
+
+# 第 3 轮：Agent 3（集成收口）合入 windows 分支 + 重打包 + 复跑
+
+执行日期：2026-09-30。执行人：Agent 3。
+前置：Agent 1 的 ISSUE-1 修复（`adapt/dsh-017-windows@2ad78cc`，含 T3、T6 归档、映射编码修复、48/48 测试）**已由 Agent C 复审通过**，阻塞解除。
+**结论：合入干净无冲突；四项门 PASS（unit 98/98、integration 21/21）；新包已产出；19 条目三方 SHA256 全等；CI 仍 PENDING。**
+
+## 13. 合入 `adapt/dsh-017-windows` → `adapt/dsh-017-host`
+
+### 13.1 合并前状态
+
+| 项 | 值 |
+|---|---|
+| 合并前 host HEAD | `75a54fa53af79357659db218c053df95f928fa62`（含第 2 轮证据提交） |
+| windows 分支 HEAD | `2ad78cc2ff3f5a9b31a0bc07f1fded3b9a888eef` |
+| merge base | `07500522325a188e5d3a9823c6dede19ee1b0851`（T3） |
+| 合并前冲突预演 | `git merge-tree --write-tree adapt/dsh-017-host adapt/dsh-017-windows` → 单行输出树对象 `5b009da1…`，**无冲突标记** |
+
+### 13.2 合并结果
+
+以 `git merge --no-ff` 执行，**ort 策略自动合并，0 冲突**：
+
+```
+Merge branch 'adapt/dsh-017-windows' into adapt/dsh-017-host: T3 token 定向清理 +
+T6 实机证据归档 + ISSUE-1 映射编码修复（ANSI 写）+ 5 项中文 StateDir 回归测试
+```
+
+合并 commit：`c86c66ac4324600ebfdc63d86bdb05391a8fc3cc`（parents: `75a54fa` + `2ad78cc`）
+
+带入 5 个文件变更：
+
+| 文件 | 变更 |
+|---|---|
+| `scripts/approval-toast.ps1` | +8/−1（映射写入改 ANSI） |
+| `test/dialog.unicode-mapping.test.js` | +139（新增 5 项回归测试） |
+| `docs/compat/evidence/windows/t6/T6-results.md` | +82（新增） |
+| `docs/compat/evidence/windows/t6/env-baseline.md` | +65（新增） |
+| `docs/compat/evidence/windows/t6/toast-entry-baseline.txt` | +3（新增） |
+
+### 13.3 冲突裁决逐条列
+
+**本轮实际冲突数 = 0，无任何文件需要按「以 windows 分支为准」裁决。**
+
+原因：windows 分支自 merge base `0750052` 起只改动了上述 5 个文件；host 分支同期改动的是 `package.json`/`CHANGELOG.md`/`lib/**`/`docs/compat/evidence/g1-automatic-gate.md`/CI 配置——**两侧文件集不相交**，故 git 无需人工裁决。
+
+为履行「逐条列裁决」的要求，对**双方共同祖先之后各自改动过的路径**做穷尽核对，逐条给出裁决：
+
+| # | 路径 | host 侧 | windows 侧 | 裁决 | 依据 |
+|---|---|---|---|---|---|
+| 1 | `scripts/approval-toast.ps1` | 未改（沿用基线 UTF-8 写法） | **改**：`WriteAllText(..., [System.Text.Encoding]::Default)` | **采纳 windows** | 即 ISSUE-1 修复本体，C 已复审通过；host 侧无竞争改动 |
+| 2 | `test/dialog.unicode-mapping.test.js` | 不存在 | **新增** | **采纳 windows** | ISSUE-1 回归测试（含清理路径第 2 个受害者） |
+| 3 | `docs/compat/evidence/windows/t6/T6-results.md` | 不存在 | **新增** | **采纳 windows** | T6 实机证据归档，G2 通道层收口依据 |
+| 4 | `docs/compat/evidence/windows/t6/env-baseline.md` | 不存在 | **新增** | **采纳 windows** | 同上 |
+| 5 | `docs/compat/evidence/windows/t6/toast-entry-baseline.txt` | 不存在 | **新增** | **采纳 windows** | 同上 |
+| 6 | `package.json` | **改**：`test:unit` 已含 7 个测试文件（含 T2/T4 的 `queue`/`store`） | 旧形态（无 `test:unit`，仅有 `test`/`typecheck`） | **采纳 host** | host 侧含 T2/T4 的脚本聚合，较新；windows 分支自 merge base 起**未改** `package.json`（已核 `git diff --name-only 0750052 adapt/dsh-017-windows` 不含它），故非冲突项 |
+| 7 | `CHANGELOG.md` | **改**：含 `0.3.1-rc.1` 未发布段 | 旧形态（无该段） | **采纳 host** | 同上，windows 侧未改此文件（`git diff --stat` 显示 host→windows 为 −6 行纯回退，非其自身改动） |
+| 8 | `.github/workflows/ci.yml`、`release.yml` | **改**：含 `check`/`integration` 分层门禁 | 旧形态（无这些 job） | **采纳 host** | 同上，windows 侧未改 CI |
+| 9 | `lib/**` | 构建产物与 src 同步 | 旧构建产物 | **采纳 host** | windows 侧未改 `lib/`；合并后由 `npm run build` 重新校验一致 |
+| 10 | `docs/compat/evidence/g1-automatic-gate.md` | 含第 1、2 轮记录 | 不存在 | **采纳 host** | 本轮在其后**追加**第 3 轮，前两轮原文不改 |
+
+> 说明：第 6–9 项之所以"采纳 host"，是因为它们在 windows 分支上**从未被修改**——`git diff --stat 0750052 adapt/dsh-017-windows` 仅列出 §13.2 的 5 个文件。因此它们不构成合并冲突，只是被本轮穷尽核对列出以满足"逐条列裁决"要求。
+
+### 13.4 合并后完整性校验
+
+| 校验 | 结果 |
+|---|---|
+| 合并后工作区 | 干净（`git status --porcelain` 空） |
+| ISSUE-1 修复在位 | `scripts/approval-toast.ps1:322` = `[System.IO.File]::WriteAllText($mappingFile, $StateDir, [System.Text.Encoding]::Default)` ✅ |
+| `ci.yml` 未被回退 | `check:`(L15) 与 `integration:`(L56) 两个 job 均在 ✅ |
+| CHANGELOG `0.3.1-rc.1` 段未被回退 | 存在（L3）✅ |
+| `package.json` version | `0.3.1-rc.1` ✅ |
+
+## 14. 合入后发现并修复的接线缺口（重要）
+
+**问题**：windows 分支的 `test/dialog.unicode-mapping.test.js`（5 项测试）**未被纳入 `test:unit`**。
+
+根因：windows 分支自 merge base `0750052` 分叉，其 `package.json` 停留在**没有 `test:unit` 脚本**的旧形态（只有 `prepare`/`build`/`clean`/`test`/`test:approval`/`typecheck`）。`test:unit` 是 host 分支后来（T5）才引入的聚合脚本，windows 侧无从得知要追加新文件。合并后 `test:unit` 仍只列 7 个文件，新测试**不会被执行**——若不复核，98 项会静默退化成 93 项。
+
+**修复**：在 `package.json` 的 `test:unit` 末尾追加 `test/dialog.unicode-mapping.test.js`（该文件属 Agent 3 独占范围）。修复后 93 → **98** 项，与派发要求的「约 98 项」一致。
+
+commit：`70cb25c30c17c16c4eb1ea7f74d8d0682e748309`
+`重打包准备: test:unit 纳入 dialog.unicode-mapping.test.js（93->98）；CHANGELOG 注明重打包（T6 收口 + ISSUE-1 修复）`
+
+## 15. 重打包（干净目录，Node 24）
+
+### 15.1 流程
+
+| 步骤 | 命令 / 操作 | 结果 |
+|---|---|---|
+| 1 | `git archive --format=tar -o head.tar HEAD`（HEAD = `70cb25c`） | exit 0，808960 字节 |
+| 2 | 解包到全新空目录 `D:\codex\dsh-approval-center-3\repack` | 确认**无 `.git`、无 `node_modules`** |
+| 3 | `npm install --no-audit --no-fund` | exit 0，added 6 packages（`.npmrc` 的 `omit=peer` 生效，未灌入 DSH 依赖树） |
+| 4 | `npm run build` | exit 0 |
+| 5 | 干净目录 `lib/**` 与仓库 `lib/**` 逐文件 SHA256 比对 | **10/10 IDENTICAL**（构建可复现） |
+| 6 | `npm pack` | exit 0，`total files: 19` |
+
+> 注：首次尝试用 `git archive \| tar -x` 管道解包失败（tar 报 bad header checksum）——这是本沙箱下"程序捕获另一程序管道输出"的限制，非仓库问题。改用 `-o` 落盘再解包即正常。
+
+### 15.2 新包固定信息
+
+| 项 | 值 |
+|---|---|
+| **新 tgz 绝对路径** | `D:\codex\dsh-approval-center-0.3.1-rc.1-t6-issue1.tgz` |
+| **新 SHA256** | `9F13E71BF14F26D9D4840032DA3C5409CBCE43F93CBA47BA0F61B947E25ECFA8` |
+| 新包大小 | 47170 字节 |
+| 包内条目数 | **19** |
+| 版本 | `0.3.1-rc.1`（维持不变） |
+| peer | `@deepseek-ai/dsh: 0.1.7-rc.2`（精确，未变） |
+| 构建 commit | `70cb25c30c17c16c4eb1ea7f74d8d0682e748309` |
+| **旧 SHA（作废）** | `7CE7ACAD984B1FF642D30D3CA6112BD5C6A3AA24CFA98E46B554F7A9FACF819D`（对应未修复的 `1d7d2a8`） |
+
+> 文件名带 `-t6-issue1` 后缀是**为了不覆盖旧 tgz 造成 SHA 混淆**；包内 `package.json` 的 `name`/`version` 仍为标准 `dsh-approval-center@0.3.1-rc.1`，`release.yml` 的 `dsh-approval-center-*.tgz` glob 亦能匹配（实际发布时由 `npm pack` 现场产出标准名）。C 安装时直接用该绝对路径即可。
+
+### 15.3 新包 19 条目清单
+
+```
+package/LICENSE                              package/lib/dialog.d.ts
+package/package.json                         package/lib/host-contract.d.ts
+package/CHANGELOG.md                         package/lib/index.d.ts
+package/README.md                            package/lib/queue.d.ts
+package/cordis.patch.yml                     package/lib/store.d.ts
+package/lib/dialog.js                        package/scripts/approval-toast.ps1
+package/lib/host-contract.js                 package/scripts/approval-uri-handler.ps1
+package/lib/index.js                         package/scripts/approval-uri-handler.vbs
+package/lib/queue.js                         package/scripts/toast.ps1
+package/lib/store.js
+```
+
+### 15.4 新旧包逐条目差异（哪些入包文件变了）
+
+19 项中**恰好 3 项变化**，其余 16 项字节相同：
+
+| 条目 | 状态 | 原因 |
+|---|---|---|
+| `scripts/approval-toast.ps1` | **CHANGED** | ISSUE-1 修复（UTF-8 → ANSI 写映射） |
+| `package.json` | **CHANGED** | `test:unit` 纳入新测试文件 |
+| `CHANGELOG.md` | **CHANGED** | 新增「重打包（T6 收口 + ISSUE-1 修复）」段 |
+| 其余 16 项 | same | — |
+
+**`lib/**` 全部 10 个文件与旧包字节相同**——本次是脚本层修复，未改 `src/`，符合预期。
+
+### 15.5 CHANGELOG 注明（按派发要求）
+
+版本**维持 `0.3.1-rc.1`**，已在未发布段新增子节：
+
+> `### 重打包（T6 收口 + ISSUE-1 修复）`
+> 明确「入包文件已变更，此前的候选包 SHA256 作废，须以本段对应的重打包产物为准」，并分列 ISSUE-1 修复内容、`-CleanupToken` 补测、T6 证据归档。
+
+## 16. G1 第 3 轮：四项门 + 隔离安装复跑 + 三方比对
+
+环境与第 2 轮一致：`DESKTOP-3ROFSHU\A` 正常桌面交互账户；Windows NT 10.0.26200.0；Node v24.20.0；npm 11.19.0；PowerShell 5.1.26100.9168；`wscript.exe` 可用。
+
+### 16.1 四项门（commit `70cb25c`，工作区干净）
+
+| # | 门 | 命令 | 结果 | 日志 |
+|---|---|---|---|---|
+| 1 | 类型 | `npm run typecheck` | **PASS**（exit 0） | `logs\g1r3-typecheck.log` |
+| 2 | 构建 | `npm run build` | **PASS**（exit 0） | `logs\g1r3-build.log` |
+| 3 | 完整单测 | `npm run test:unit` | **98 tests / 98 pass / 0 fail / 0 cancelled / 0 skipped**（exit 0，duration 22735ms） | `logs\g1r3-test-unit.log` |
+| 4 | 集成（目标版） | `npm run test:integration` | **21 tests / 21 pass / 0 fail / 0 skipped**（exit 0，duration 4217ms） | `logs\g1r3-test-integration.log` |
+
+### 16.2 98 项构成：新增 5 项确认真实执行
+
+第 3 轮的 5 项新增（全部 PASS，非 skip）：
+
+```
+✔ ISSUE-1/清理路径: 中文私有 StateDir 下 -CleanupToken 经映射命中并双清（Agent 1 发现的第二个受害者） (398.0ms)
+✔ ISSUE-1/静态: approval-toast.ps1 的映射写入必须是 ANSI（Encoding.Default） (0.5ms)
+✔ ISSUE-1/VBS: ANSI 映射 -> 中文+空格 StateDir 命中 (199.3ms)
+✔ ISSUE-1/PS 回退: ANSI 映射 -> 中文+空格 StateDir 命中 (327.1ms)
+✔ ISSUE-1/对照: UTF-8 旧写法仍会回落默认目录（记录处理器既有语义，不因本修复改变） (2263.3ms)
+```
+
+原有真实进程执行用例仍全绿（wscript/PS 非 mock）：
+
+```
+✔ U-vbs/01: approve 决定写入默认状态目录 (38.6ms)
+✔ U-vbs/03: 非法 id（路径穿越/非 hex）→ 不写任何文件 (6280.0ms)
+✔ U-ps/01: approve 决定写入默认状态目录 (216.9ms)
+✔ U-ps/03: 非法 id（路径穿越/非 hex）→ 不写任何文件 (6661.8ms)
+```
+
+`U-ps/04` 等其余 U 系列同前两轮一致通过。
+
+### 16.3 集成测试 fixture 仍精确 `0.1.7-rc.2`
+
+汇总原文 `tests 21 / suites 8 / pass 21 / fail 0 / skipped 0`；`dsh-llm` / `dsh-scope` / `dsh-session` / `dsh-user-approval` 实测均为 `0.1.7-rc.2`。
+
+### 16.4 新 tgz 隔离安装后从安装包入口复跑集成
+
+| 步骤 | 操作 | 结果 |
+|---|---|---|
+| 1 | 全新空目录 `D:\codex\dsh-approval-center-3\isolated-r3\pkg\`，仅含私有 `package.json` | OK |
+| 2 | `npm install file:./dsh-approval-center-0.3.1-rc.1.tgz`（即新包） | exit 0 |
+| 3 | 安装后 version | `0.3.1-rc.1` |
+| 4 | 安装后脚本含修复 | `approval-toast.ps1:322` 为 `[System.Text.Encoding]::Default` ✅ |
+| 5 | 复制 `test/integration/`（去 `node_modules`）→ `npm ci --ignore-scripts` | exit 0，14 packages，四包均 `0.1.7-rc.2` |
+| 6 | `DSH_PLUGIN_ENTRY=<隔离安装>\node_modules\dsh-approval-center\lib\index.js` 运行两集成文件 | **21/21 PASS，0 fail，0 skip**（exit 0） |
+
+日志：`logs\g1r3-isolated-integration.log`
+
+### 16.5 19 条目 SHA256 三方比对（tgz 解包 == 隔离安装 == 仓库工作树）
+
+```
+CHANGELOG.md                       IDENTICAL      lib/index.js                       IDENTICAL
+LICENSE                            IDENTICAL      lib/queue.d.ts                     IDENTICAL
+README.md                          IDENTICAL      lib/queue.js                       IDENTICAL
+cordis.patch.yml                   IDENTICAL      lib/store.d.ts                     IDENTICAL
+package.json                       IDENTICAL      lib/store.js                       IDENTICAL
+lib/dialog.d.ts                    IDENTICAL      scripts/approval-toast.ps1         IDENTICAL
+lib/dialog.js                      IDENTICAL      scripts/approval-uri-handler.ps1   IDENTICAL
+lib/host-contract.d.ts             IDENTICAL      scripts/approval-uri-handler.vbs   IDENTICAL
+lib/host-contract.js               IDENTICAL      scripts/toast.ps1                  IDENTICAL
+lib/index.d.ts                     IDENTICAL
+```
+
+**mismatches: 0 / 19** —— 三方逐字节一致。
+
+### 16.6 脚本编码门复核（新增/变更脚本）
+
+| 脚本 | 判据 | 结果 |
+|---|---|---|
+| `scripts/approval-toast.ps1` | 含非 ASCII（9375 字节）时须有 UTF-8 BOM | bom=True ✅ |
+| `scripts/approval-uri-handler.vbs` | 必须纯 ASCII | nonAscii=0 ✅ |
+| `scripts/approval-toast.ps1` | PS 5.1 `Parser::ParseFile` 语法 | 0 errors ✅ |
+
+## 17. CI 检查（沿用第 2 轮 4 项风险结论）
+
+### 17.1 推送状态：仍未推送 ⇒ PENDING
+
+```
+git ls-remote --heads origin          → 仅 f608abd  refs/heads/main
+git branch -r --contains HEAD         → （空）
+git rev-list --count origin/main..HEAD → 27
+```
+
+**GitHub Actions 首轮结果：PENDING（无运行记录）。**
+**触发条件（必须写明）**：`ci.yml` 的 `push` 只监听 `main`（`branches: [main]`），因此**把 `adapt/dsh-017-host` 直接推到 origin 不会触发 CI**；要取得首轮结果，**需开 PR 或推 main 触发**（`pull_request` 未限定分支，开 PR 即触发）。
+
+本轮**未推送、未打 tag、未触发 `release.yml`**（红线遵守）。
+
+### 17.2 四项风险（第 2 轮结论沿用，本轮复核仍成立）
+
+| # | 风险 | 本轮复核 |
+|---|---|---|
+| 1 | `ci.yml` 的 `push` 只监听 `main`；直推 adapt 分支不触发 CI | ✅ 仍成立（`ci.yml:4-5` = `push: branches: [main]`）。**需开 PR 或推 main 触发** |
+| 2 | `release.yml` 开放 `workflow_dispatch`，有写权限者可手动触发并**真的创建 Release** | ✅ 仍成立（`release.yml:18`）。本轮未触发；发布前须确认无人误触 |
+| 3 | `release.yml` 无独立脚本编码门（仅 `ci.yml check` 有） | ✅ 仍成立；其 `test:unit` 经 `dialog.scripts.test.js` 部分覆盖 S-01–S-04 |
+| 4 | `ci.yml` 的 integration job 不校验 tarball 条目（仅 `release.yml` 校验） | ✅ 仍成立；本轮已本地实测 19 项齐全（§15.3/§16.5） |
+
+### 17.3 门禁一致性（本轮复核）
+
+`ci.yml`：`check`（`npm ci` → typecheck → build → test:unit → 脚本编码/PS5.1 语法门）与 `integration`（`needs: check`；精确 `0.1.7-rc.2` fixture 安装 + 版本漂移断言 → `test:integration`；`fixture-015` 为 `continue-on-error` 观察项）——与本地门禁一致。
+`release.yml`：tag 触发；`npm ci` → typecheck → build → test:unit → 精确 fixture → `test:integration` → `npm pack` → tarball 7 必需条目校验 → `gh release create`——与本地一致，且本轮新包 19 项已覆盖其要求的 7 项。
+
+## 18. PASS / FAIL / PENDING 汇总（第 3 轮）
+
+### PASS
+
+| 项 | 证据 |
+|---|---|
+| 合入 `adapt/dsh-017-windows@2ad78cc` | merge commit `c86c66a`，**0 冲突**，裁决逐条列于 §13.3 |
+| ISSUE-1 修复在合并后树中生效 | `approval-toast.ps1:322` 用 `Encoding::Default` |
+| 接线缺口修复（新测试纳入 `test:unit`） | `package.json` commit `70cb25c`；93 → 98 |
+| `npm run typecheck` | exit 0 |
+| `npm run build` | exit 0；干净目录构建 `lib` 与仓库逐文件 SHA256 全等 |
+| `npm run test:unit` — **98/98，0 fail，0 skip** | 含 5 项新增 ISSUE-1 测试 + wscript/PS 实执行 |
+| `npm run test:integration` — **21/21，0 fail，0 skip** | fixture 精确 `0.1.7-rc.2` |
+| 干净目录 `npm install` → `build` → `npm pack` | exit 0；19 条目 |
+| 新 tgz 隔离安装后从安装包入口复跑集成 | **21/21，0 fail，0 skip** |
+| 19 条目三方 SHA256 比对 | **0 / 19 mismatch** |
+| 脚本编码门 | ps1 BOM ✅、vbs 纯 ASCII ✅、PS5.1 解析 0 error ✅ |
+| CHANGELOG 重打包注明 | 「重打包（T6 收口 + ISSUE-1 修复）」 |
+| 版本维持 `0.3.1-rc.1` + peer 精确 `0.1.7-rc.2` | 实测 |
+| `ci.yml`/`release.yml` 与本地门禁一致 | §17.3 |
+
+### FAIL
+
+**无。** 本轮未观察到任何门禁失败。
+
+### PENDING
+
+| 项 | 原因 | 解除条件 |
+|---|---|---|
+| GitHub Actions 首轮结果 | 分支未推送 | **需开 PR 或推 main 触发**（直推 adapt 分支不触发，见 §17.1） |
+| G2 Windows 实机（E6/V17 用新包重测） | 需 Agent C 用新包实机重测 | 交 Agent C 执行 |
+| G4 发布/打 tag/回滚结论 | 依赖 G2 + CI | 见派发单 |
+| 0.1.5-rc.1 旧版回归用例 | fixture 就绪但无用例 | 补用例；不构成双版本支持承诺 |
+
+## 19. 边界声明（第 3 轮）
+
+- 本轮**未发布、未打 tag、未改生产 profile、未动 HKCU**；`release.yml` 未触发。
+- 本轮修改文件：`package.json`（`test:unit` 纳入新测试）、`CHANGELOG.md`（按派发要求注明重打包）、本证据文件（追加第 3 轮）。**第 1、2 轮原文未改动。**
+- **未修改 `src/`、`scripts/`、`test/`**——`scripts/approval-toast.ps1` 与 `test/dialog.unicode-mapping.test.js` 的变更全部来自 windows 分支合并带入，非本轮直接编辑。
+- 集成测试通知通道仍为 **mock spawn**；**真实 Toast / URI 点击属 G2（Agent C）范围**，本文件不作实机通过声明。
+- **新包未经 Agent C 用新包复审 + 实机重测（E6/V17）前，不得称"验收通过"。**
