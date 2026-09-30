@@ -15,6 +15,10 @@
 # ⚠ 覆盖本配置时请用「id 定向补丁」而不是 insert，并把字段写全：
 #   DSH 的 patch 语义是 config 整体替换、不做深合并，缺的字段会落回 schema 默认值
 #   （例如只写 timeoutSec 会让 tools 变回 ['*']，即拦截全部审批）。
+#
+# 通知范围（本版）：只有**主对话**的审批请求、本轮完成、本轮异常会弹通知。
+#   子代理的启动/结束/错误/审批/结果一律不通知 —— 旧字段 notifyOnSubagentStart /
+#   notifyOnSubagentEnd 已弃用，即使写成 true 也强制不生效，请从配置中删除。
 - insert:
     - id: approval-center
       name: 'dsh-approval-center'
@@ -27,7 +31,12 @@
         timeoutSec: 60
         timeoutAction: reject            # 超时=无人应答，fail-closed（approve 会敞开大门，勿改）
         queueMode: parallel
-        # 只保留"必须问"的审批通知：其余三类通知一律关，避免噪音。
-        notifyOnSubagentStart: false
-        notifyOnSubagentEnd: false
+        # 主对话完成/异常通知（本版需求：默认开启）。
+        notifyOnTurnEnd: true
+        notifyOnTurnFailure: true
+        # 任务通知默认静音，可改 'default' 使用系统默认提示音。
+        taskNotificationSound: silent
+        # 设为 false 则只显示会话短 ID（锁屏也可能展示正文）。
+        taskNotificationShowTitle: true
+        # 审批结果回执保持关闭（只保留"必须问"的审批通知）。
         notifyOnApprovalResult: false

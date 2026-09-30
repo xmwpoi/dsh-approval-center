@@ -6,9 +6,39 @@
  */
 import type { ApprovalStatus } from './store.js'
 
-/** wire-safe 的 Agent 契约只保证 `id`；`session` 来自运行时增强（dsh-agent/lib/types/types.d.ts） */
+/**
+ * 宿主 Session 的最小结构面（本插件只读这三项，不把整套 DSH 类型拖进依赖树）。
+ * 依据：@deepseek-ai/dsh-session/lib/types/index.d.ts（`readonly header: SessionHeader`、
+ * `snapshotEvents(fromSeq?, toSeqExclusive?)`）与 types.d.ts 的 SessionHeader。
+ */
+export interface SessionLike {
+  readonly id?: string
+  /** 始终存在（宿主保证）；`origin === 'subagent'` 是本插件唯一的子代理判据。 */
+  readonly header?: SessionHeaderLike
+  /** 公开事件快照 API；用于首次遇到会话时回读最后一条 session/title。 */
+  snapshotEvents?: (fromSeq?: number, toSeqExclusive?: number) => readonly SessionEventLike[]
+}
+
+/** SessionHeader 的最小面（dsh-session types.d.ts）。root 会话 origin 缺省。 */
+export interface SessionHeaderLike {
+  readonly id?: string
+  /** 目标版公开分类字段：子代理子会话为 'subagent'，root 会话为 undefined。 */
+  readonly origin?: string
+  /** fork 谱系；**不作为主/子判据**（fork 也会保留父关系）。 */
+  readonly parentSession?: string
+  /** 递归预算；**不作为主分类**。 */
+  readonly delegationDepth?: number
+}
+
+/** SessionEvent 的最小面：本插件只读 type 与 data。 */
+export interface SessionEventLike {
+  readonly type: string
+  readonly data?: { readonly [key: string]: unknown }
+}
+
+/** wire-safe 的 Agent 契约只保证 `id`；`session` 来自运行时增强（dsh-agent runtime-types.d.ts:143） */
 export interface ApprovalRequestEvent {
-  readonly agent: { readonly id?: string; readonly session?: { readonly id?: string } }
+  readonly agent: { readonly id?: string; readonly session?: SessionLike }
   readonly toolName: string
   readonly callId?: string
   readonly reason?: string
@@ -165,3 +195,79 @@ export function subagentEndLabel(stopReason: string | undefined): string {
   if (stopReason === undefined || stopReason === '') return '已结束'
   return SUBAGENT_END_LABEL[stopReason] ?? `已结束（${stopReason}）`
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// 主/子身份适配器（T0 契约 §2.4/§2.6）— A 独占
+// ────────────────────────────────────────────────────────────────────────────
+
+/** 会话身份分类。'unknown' 表示身份无法可靠确认——调用方必须走安全转交，不得当作主会话。 */
+export type SessionIdentity = 'root' | 'subagent' | 'unknown'
+
+/**
+ * 主/子身份判据（契约 §2.4 冻结）：`header.origin === 'subagent'` 是**唯一**判据。
+ *
+ * 为什么不看别的字段（逐条否决，均有宿主原文依据）：
+ * - `parentSession`：注释原文是 "The session this one was forked from (seed lineage)"，
+ *   **fork 也会保留父关系**，用它会把 fork 根会话误判成子代理。
+ * - `delegationDepth`：注释原文说明它是 "recursion budget"（递归预算），不是主分类。
+ * - `isSeeded`：fork seed 为 true，但 fork 根会话仍是主会话。
+ *
+ * root 会话该字段**缺省**（undefined）；宿主**不存在** 'root'/'main' 字面量，
+ * 所以判据必须是"等于 'subagent'"，绝不能写成"等于 'root'"。
+ */
+export function classifySessionOrigin(header: SessionHeaderLike | undefined): SessionIdentity {
+  if (header === undefined) return 'unknown'
+  return header.origin === 'subagent' ? 'subagent' : 'root'
+}
+
+/** 宿主公开的按 id 查 live agent 的查询面（`ctx.agents.get(id)` → Agent | undefined）。 */
+export type AgentLookup = (id: string) => { readonly session?: SessionLike } | undefined
+
+/**
+ * 审批请求 → 真实 Session 解析（契约 §2.6 冻结顺序）。
+ *
+ *   1) `req.agent.session`（运行时增强存在时最直接）
+ *   2) `lookup(req.agent.id)?.session`（宿主公开查询 API 查回）
+ *   3) 都拿不到 → undefined（身份无法确认）
+ *
+ * `req.agent` 的 wire-safe 公开面**只有 `id`**（dsh-agent 的 `Agent` 接口只声明
+ * `readonly id`），`session` 属运行时增强，**不能假定请求对象上带着它**。
+ *
+ * 返回 undefined 的语义是"本插件不得认领"：调用方必须 `next()` 恰一次交宿主其他
+ * 应答者，**绝不**静默自动批准或拒绝，也不得创建审批记录或弹窗。
+ */
+export function resolveRequestSession(
+  req: { readonly agent?: { readonly id?: string; readonly session?: SessionLike } } | undefined,
+  lookup?: AgentLookup,
+): SessionLike | undefined {
+  const direct = req?.agent?.session
+  if (direct !== undefined) return direct
+  const id = req?.agent?.id
+  if (typeof id !== 'string' || id === '' || lookup === undefined) return undefined
+  try {
+    return lookup(id)?.session
+  } catch {
+    // 查询面抛异常（服务已 dispose 等）不得让审批请求崩在 waterfall 里：
+    // 按身份不可确认处理，交下一个应答者。
+    return undefined
+  }
+}
+
+/**
+ * 从事件流取**最后一条** `session/title` 的 title（契约 §2.5 冻结读取顺序）。
+ *
+ * 宿主 `Session` **没有** `title` 属性（只有 `header`，且 SessionHeader 不含 title），
+ * 标题只能从事件流取。首次遇到某会话时用公开 `session.snapshotEvents()` 回读。
+ * 找不到、标题非字符串、或归一化后为空 → undefined（调用方回退 `会话 <短ID>`）。
+ */
+export function latestTitleFromEvents(events: readonly SessionEventLike[] | undefined): string | undefined {
+  if (!Array.isArray(events)) return undefined
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event?.type !== 'session/title') continue
+    const title = event.data?.['title']
+    if (typeof title === 'string' && title.trim() !== '') return title
+  }
+  return undefined
+}
+

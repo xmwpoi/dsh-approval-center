@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,7 +16,10 @@ export const APPROVAL_URI_HANDLER_SCRIPT = 'approval-uri-handler.ps1'
  * 每次审批都被误判成超时。
  */
 export const APPROVAL_URI_HANDLER_VBS = 'approval-uri-handler.vbs'
-/** 审批结果通知脚本（仅当显式开启通知时才需要）。 */
+/**
+ * 任务通知脚本（T0 契约 §4.4）：主对话完成/错误通知的唯一投递通道。
+ * 同时被旧的 `showToast` 兼容路径复用（该路径不传 -Tag/-Group，走脚本默认值）。
+ */
 export const RESULT_TOAST_SCRIPT = 'toast.ps1'
 
 /**
@@ -361,4 +365,261 @@ export function showToast(title: string, message: string): void {
   child.on('exit', (code) => {
     if (code !== 0) console.warn(`[dsh-approval-center] toast.ps1 exit=${code}（通知可能未送达）`)
   })
+}
+
+// ---------------------------------------------------------------------------
+// T0 契约 §4.1 / §4.3 / §4.4：任务通知 sender（C 独占）
+//
+// 语义边界（§4.4，逐字执行，不得放宽）：
+//   'submitted' **仅**表示 WinRT `Show()` 未抛异常。它**不**表示用户看到/听到通知，
+//   也**不**表示系统已呈现横幅。任何日志与文档都不得把 submitted 写成"用户已看到"。
+//   'failed'  = 参数非法 / 启动失败 / 非零退出 / watchdog 超时
+//   'aborted' = 调用方 signal 中止（B 的 NotificationService 在 close() 时 abort 在飞发送）
+// ---------------------------------------------------------------------------
+
+/** 冻结的消息结构（T0 契约 §4.1）。字段由 B 归一化/截断后传入，sender 不再改写正文。 */
+export interface NotificationMessage {
+  /** 去重键；主通知 = `${sessionId}:${turn}`。sender 只用它算 Tag。 */
+  readonly key: string
+  readonly source: 'turn'
+  readonly sessionId: string
+  readonly title: string
+  readonly message: string
+  /** true = 静音（`<audio silent="true"/>`）；false = 系统默认提示音 */
+  readonly silent: boolean
+}
+
+/** 冻结的三值结果（T0 契约 §4.1）。'submitted' ≠ 用户已看到。 */
+export type SendResult = 'submitted' | 'failed' | 'aborted'
+
+/** 冻结的 sender 接口（T0 契约 §4.1）。`signal` **必填**（CR-C-1 裁决）。 */
+export interface NotificationSender {
+  send(message: NotificationMessage, signal: AbortSignal): Promise<SendResult>
+}
+
+/** Tag 白名单：sha256(key) 前 16 位小写 hex（T0 契约 §3.3）。 */
+export const TASK_TAG_PATTERN = /^[0-9a-f]{16}$/
+/** Group 固定字面量，与审批 `dsh-approval` / 旧结果 `dsh-result` 隔离（§3.3）。 */
+export const TASK_GROUP = 'dsh-task'
+/** 单次发送的进程 watchdog（§3.3「进程 watchdog 10 秒」）。 */
+export const TASK_SEND_TIMEOUT_MS = 10_000
+/** stdout/stderr 各自的受限收集上限（§4.4「受限收集诊断」）。 */
+export const TASK_DIAG_LIMIT_BYTES = 4096
+
+/**
+ * Tag = `sha256(key)` 的前 16 个十六进制小写字符（T0 契约 §3.3）。
+ * 纯函数、确定性：同一 key 永远映射到同一 Tag，从而让 Windows 侧的同 tag/group
+ * 替换成为去重缓存之外的第二层保障。
+ */
+export function taskNotificationTag(key: string): string {
+  return createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16)
+}
+
+/**
+ * 任务通知 sender 的可注入边界（沿用 `DialogDeps` 的 mock 风格）。
+ * 生产路径不传 deps：走真实 `spawn` 与 `setTimeout`。
+ *
+ * 与 `DialogDeps` 的差异只有一处——stdio 必须是管道（要受限收集诊断），
+ * 所以 child 上多要求 `stdout`/`stderr` 可读流。mock 只需提供 on/kill/stdout/stderr。
+ */
+export interface TaskSenderDeps {
+  spawn?: (
+    file: string,
+    args: readonly string[],
+    options: { windowsHide: boolean; stdio: 'pipe' },
+  ) => {
+    stdout?: { on(event: 'data', listener: (chunk: unknown) => void): unknown } | null
+    stderr?: { on(event: 'data', listener: (chunk: unknown) => void): unknown } | null
+    on(event: 'error', listener: (error: Error) => void): unknown
+    on(event: 'exit', listener: (code: number | null) => void): unknown
+    kill(): unknown
+  }
+  setTimer?: (fn: () => void, ms: number) => unknown
+  clearTimer?: (handle: unknown) => void
+}
+
+/** 受限诊断缓冲：只保留前 N 字节，丢弃其余（绝不无界累积）。 */
+interface BoundedBuffer {
+  readonly chunks: Buffer[]
+  size: number
+  truncated: boolean
+}
+
+function appendBounded(buf: BoundedBuffer, chunk: unknown, limit: number): void {
+  let bytes: Buffer
+  if (Buffer.isBuffer(chunk)) bytes = chunk
+  else if (typeof chunk === 'string') bytes = Buffer.from(chunk, 'utf8')
+  else if (chunk instanceof Uint8Array) bytes = Buffer.from(chunk)
+  else return
+  const room = limit - buf.size
+  if (room <= 0) {
+    buf.truncated = true
+    return
+  }
+  if (bytes.length > room) {
+    buf.chunks.push(bytes.subarray(0, room))
+    buf.size = limit
+    buf.truncated = true
+    return
+  }
+  buf.chunks.push(bytes)
+  buf.size += bytes.length
+}
+
+/**
+ * 有界摘要：单行、去控制字符、长度封顶。
+ *
+ * 为什么必须清洗：诊断文本最终进 `console.warn`，而子进程的 stdout 里可能回显
+ * 我们自己的参数（脚本诊断行会带 tag/group，绝不带正文）。控制字符与超长文本
+ * 会污染日志、甚至伪造日志行。
+ */
+function boundedSummary(buf: BoundedBuffer): string {
+  if (buf.size === 0) return ''
+  const text = Buffer.concat(buf.chunks, buf.size).toString('utf8')
+  // eslint-disable-next-line no-control-regex
+  const flat = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim()
+  const suffix = buf.truncated ? '…[truncated]' : ''
+  const max = 512
+  const clipped = flat.length > max ? `${flat.slice(0, max)}…` : flat
+  if (!clipped && !suffix) return '(non-text output)'
+  return `${clipped}${suffix}`
+}
+
+/**
+ * 构造一条任务通知的 sender（T0 契约 §4.3）。
+ *
+ * 实现要点：
+ * 1. **参数数组**启动隐藏的 `powershell.exe`（5.1）：`-File toast.ps1 -Title … -Message …`。
+ *    绝不拼 Shell 命令字符串、绝不用 `Invoke-Expression`——正文里出现 `&`/`"`/换行时
+ *    拼接会产生命令注入面。
+ * 2. **双端校验**：Tag/Group 在 Node 侧于 spawn **之前**校验（§4.4）。非法即 `'failed'`
+ *    且**不拉起任何进程**——绝不静默替换成随机 Tag（那会让 Windows 侧的同 tag 替换去重失效）。
+ * 3. **幂等结算**：`exit` / `error` / caller-abort / watchdog 四路竞争，只结算一次，先到先得。
+ * 4. **watchdog 10 秒**：卡死的子进程一律 `kill()` 并按 `'failed'` 结算，promise 永不悬挂。
+ * 5. `spawn` 同步抛出（受限沙箱 EPERM）必须捕获，绝不让它逃进宿主的 emit 监听器。
+ */
+export function createTaskNotificationSender(deps: TaskSenderDeps = {}): NotificationSender {
+  const spawnImpl = deps.spawn ?? (spawn as unknown as NonNullable<TaskSenderDeps['spawn']>)
+  const setTimerImpl = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
+  const clearTimerImpl = deps.clearTimer ?? ((handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>))
+
+  return {
+    send(message: NotificationMessage, signal: AbortSignal): Promise<SendResult> {
+      return new Promise<SendResult>((resolve) => {
+        // 结算必须幂等：四条路径互相竞争（§4.1）。
+        let settled = false
+        const settle = (result: SendResult) => {
+          if (settled) return
+          settled = true
+          resolve(result)
+        }
+
+        const tag = taskNotificationTag(message.key)
+        // Node 侧白名单校验（spawn 之前，§4.4「双端校验」）。Tag 由纯函数产出，
+        // 这里守的是"实现没被改坏 + key 是可用字符串"；非法即 fail-closed，
+        // 绝不静默换随机 Tag——那会让 Windows 侧的同 tag 替换去重失效。
+        if (typeof message.key !== 'string' || message.key.length === 0 || !TASK_TAG_PATTERN.test(tag)) {
+          console.warn('[dsh-approval-center] 任务通知 Tag 非法（须为 16 位小写 hex），本次发送按失败处理')
+          settle('failed')
+          return
+        }
+        // Group 是固定字面量：这里显式断言，保证"与审批 dsh-approval 隔离"这条不变量
+        // 在 spawn 之前就被检查，而不是靠脚本兜底。
+        if (TASK_GROUP !== 'dsh-task') {
+          console.warn('[dsh-approval-center] 任务通知 Group 非法（须为 dsh-task），本次发送按失败处理')
+          settle('failed')
+          return
+        }
+        // silent 只允许布尔；非布尔（B 侧类型被绕过）fail-closed，不猜测用户意图。
+        if (typeof message.silent !== 'boolean') {
+          console.warn('[dsh-approval-center] 任务通知 silent 字段非布尔，本次发送按失败处理')
+          settle('failed')
+          return
+        }
+        const sound = message.silent ? 'silent' : 'default'
+
+        // 已中止的发送不该再拉起进程：与 showApprovalToast 同一处理（§4.1 响应 abort）。
+        if (signal.aborted) {
+          settle('aborted')
+          return
+        }
+
+        let child: ReturnType<NonNullable<TaskSenderDeps['spawn']>>
+        try {
+          child = spawnImpl('powershell.exe', [
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', join(SCRIPTS_DIR, RESULT_TOAST_SCRIPT),
+            '-Title', message.title,
+            '-Message', message.message,
+            '-Tag', tag,
+            '-Group', TASK_GROUP,
+            '-Sound', sound,
+          ], { windowsHide: true, stdio: 'pipe' })
+        } catch (error) {
+          // 受限沙箱里 spawn 同步抛 EPERM：捕获后 fail-closed，绝不让异常逃出去。
+          console.warn(`[dsh-approval-center] 任务通知启动失败（spawn 同步抛出）: ${String(error)}`)
+          settle('failed')
+          return
+        }
+
+        const out: BoundedBuffer = { chunks: [], size: 0, truncated: false }
+        const err: BoundedBuffer = { chunks: [], size: 0, truncated: false }
+        // 管道必须被消费：不读的话子进程写满管道缓冲后会阻塞在 Write-Output 上，
+        // 直到 watchdog 强杀——那会把"成功发送"误报成超时失败。
+        child.stdout?.on('data', (chunk: unknown) => appendBounded(out, chunk, TASK_DIAG_LIMIT_BYTES))
+        child.stderr?.on('data', (chunk: unknown) => appendBounded(err, chunk, TASK_DIAG_LIMIT_BYTES))
+
+        let watchdog: unknown
+        const disarm = () => {
+          if (watchdog !== undefined) clearTimerImpl(watchdog)
+          watchdog = undefined
+          signal.removeEventListener('abort', onAbort)
+        }
+
+        const onAbort = () => {
+          if (settled) return
+          disarm()
+          child.kill()
+          settle('aborted')
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+
+        // watchdog：脚本自身管不到"进程卡住不退出"。超时强杀并 fail-closed，
+        // 保证 promise 一定结算（第一版不自动重试——WinRT 可能已接收，重试会重复响铃）。
+        watchdog = setTimerImpl(() => {
+          if (settled) return
+          disarm()
+          console.warn(`[dsh-approval-center] 任务通知进程超过 ${TASK_SEND_TIMEOUT_MS / 1000}s 未退出（watchdog 超时），已强制终止`)
+          child.kill()
+          settle('failed')
+        }, TASK_SEND_TIMEOUT_MS)
+
+        child.on('error', (error: Error) => {
+          // 缺 powershell.exe / 被安全软件拦截：与"非零退出"区分开，否则排查时毫无线索。
+          if (settled) return
+          disarm()
+          console.warn(`[dsh-approval-center] 任务通知进程启动失败（error 事件）: ${String(error)}`)
+          settle('failed')
+        })
+
+        child.on('exit', (code: number | null) => {
+          if (settled) return
+          disarm()
+          if (code === 0) {
+            // 只记"已提交"，绝不写"用户已看到"（§4.4 / §5.4 验收铁律）。
+            settle('submitted')
+            return
+          }
+          // 区分三种失败：1=参数非法（调用方 bug）2=投递失败 其它/无退出码=未预期。
+          const why = code === 1 ? '参数非法' : code === 2 ? '投递失败' : '未预期退出'
+          const detail = [boundedSummary(err), boundedSummary(out)].filter(Boolean).join(' | ')
+          console.warn(
+            `[dsh-approval-center] 任务通知投递未成功（exit=${String(code)}，${why}，tag=${tag}）` +
+            (detail ? `: ${detail}` : ''),
+          )
+          settle('failed')
+        })
+      })
+    },
+  }
 }

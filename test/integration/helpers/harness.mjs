@@ -21,9 +21,19 @@ const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 // T7a 候选包烟测可指向干净目录安装后的入口；CI 默认测试本次构建产物。
 const PLUGIN_LIB_URL = pathToFileURL(process.env.DSH_PLUGIN_ENTRY ?? join(REPO_ROOT, 'lib', 'index.js')).href
 
-/** dsh-session 的 seq/eventAt/append 最小内存实现（审计配对断言用真实事件流） */
+/**
+ * dsh-session 的 seq/eventAt/append 最小内存实现（审计配对断言用真实事件流）。
+ *
+ * 宿主保证 `session.header` **始终存在**（dsh-session index.d.ts：「session.header is
+ * always present」），且主/子判据只看 `header.origin`（契约 §2.4）。因此这个最小替身
+ * 也必须带 header —— 缺 header 会被本插件判为「身份无法可靠确认」并按 §2.7 转交 next()。
+ * origin 缺省 = root 会话；传 'subagent' 表示子代理子会话。
+ */
 export class FakeSessionLog {
   #events = []
+  constructor({ id = 'agent-fixture', origin } = {}) {
+    this.header = { id, ...(origin !== undefined ? { origin } : {}) }
+  }
   get seq() { return this.#events.length }
   append(type, data) {
     this.#events.push({ type, data })
@@ -35,6 +45,11 @@ export class FakeSessionLog {
   }
   eventsOf(type) { return this.#events.filter((e) => e.type === type) }
   get all() { return [...this.#events] }
+  /** 公开快照 API（契约 §2.5 标题回读用） */
+  snapshotEvents(fromSeq = 0, toSeqExclusive) {
+    const end = toSeqExclusive === undefined ? this.#events.length : Number(toSeqExclusive)
+    return this.#events.slice(Number(fromSeq), end)
+  }
 }
 
 export function approvalPairOf(session) {
@@ -81,11 +96,17 @@ export async function waitForSpawns(channel, count, { timeoutMs = 5000 } = {}) {
 /**
  * 组装一个真实宿主：Context + ApprovalService + 插件 fiber（ctx.plugin 走真实
  * config 校验与 fiber effect 生命周期）。返回 unload() 供卸载/重载用例。
+ *
+ * `sessionId`/`origin` 用于构造带 `header` 的会话替身（§2.4 主/子判据）；
+ * `origin: 'subagent'` 得到子代理子会话。
  */
-export async function startHost({ policy = 'ask', config = {}, dataDir: dataDirOverride } = {}) {
+export async function startHost({
+  policy = 'ask', config = {}, dataDir: dataDirOverride,
+  sessionId = 'agent-fixture', origin,
+} = {}) {
   const ctx = new Context()
-  const session = new FakeSessionLog()
-  const agent = { id: 'agent-fixture', session }
+  const session = new FakeSessionLog({ id: sessionId, origin })
+  const agent = { id: sessionId, session }
   const service = new ApprovalService(ctx, { policy })
   const dataDir = dataDirOverride ?? mkdtempSync(join(tmpdir(), `approval-t5-${randomUUID().slice(0, 8)}-`))
   const pluginMod = await import(PLUGIN_LIB_URL)
@@ -95,6 +116,10 @@ export async function startHost({ policy = 'ask', config = {}, dataDir: dataDirO
     timeoutAction: 'reject',
     tools: ['*'],
     queueMode: 'serial',
+    notifyOnTurnEnd: true,
+    notifyOnTurnFailure: true,
+    taskNotificationSound: 'silent',
+    taskNotificationShowTitle: true,
     notifyOnSubagentEnd: false,
     notifyOnSubagentStart: false,
     notifyOnApprovalResult: false,
@@ -107,6 +132,14 @@ export async function startHost({ policy = 'ask', config = {}, dataDir: dataDirO
     ctx, session, agent, service, fiber, dataDir,
     unload: () => fiber.dispose(),
   }
+}
+
+/**
+ * 走宿主真实 Cordis 派发路径发布一条会话事件（不直接调用插件监听器，
+ * 这样 scope 过滤、监听器注册与注销都被真实执行）。
+ */
+export function publishSessionEvent(host, event) {
+  host.ctx.emit('session/event', host.session, event)
 }
 
 /** 开启真实 turn（ApprovalService.request 的 open-turn 前置，contract §2.3） */

@@ -204,11 +204,41 @@ SQLite 保存原始审批原因与结果；`displayReason` 用于界面展示，
     timeoutAction: reject              # reject=超时自动拒绝（默认，安全）；approve=超时自动批准（危险）
     tools: ['*']                       # 完全镜像系统判断：认领全部工具的审批请求
     queueMode: parallel                # serial=串行；parallel=并列（信号量上限 3）
-    notifyOnSubagentEnd: false         # 默认关：只保留"必须问"的审批通知
-    notifyOnSubagentStart: false       # 默认关
+    # ── 主对话通知（0.4.0-rc.1）──────────────────────────────
+    notifyOnTurnEnd: true              # 主会话完成一轮回复时通知（默认开）
+    notifyOnTurnFailure: true          # 主会话本轮异常（出错/受阻/触顶）时通知（默认开）
+    taskNotificationSound: silent      # 任务通知声音：silent（默认）/ default=系统默认提示音
+    taskNotificationShowTitle: true    # false 时只显示会话短 ID
+    # ── 审批结果回执 ──────────────────────────────────────────
     notifyOnApprovalResult: false      # 默认关（想要审批结果回执就改 true）
     dataDir: ''                        # 默认 $DSH_HOME/approval-center
 ```
+
+### 通知范围：只有主对话
+
+本插件**只对主对话**弹通知：审批请求、本轮完成、本轮异常。
+**子代理**（委派子会话）的启动、结束、错误、审批与结果**一律不通知**。
+
+- 旧字段 `notifyOnSubagentStart` / `notifyOnSubagentEnd` 已**弃用**：
+  即使旧配置写 `true` 也**强制不生效**，不产生任何通知或 PowerShell 进程。
+  请从 profile 配置中**删除**这两个字段（保留它们只在挂载时多一条弃用告警）。
+- 主/子判据是宿主公开的 `session.header.origin === 'subagent'`，没有其他启发式。
+- **子代理审批不会被本插件认领**：它会 `next()` 交回宿主其他应答者（如 Web GUI），
+  因此子代理仍可能在宿主界面等待人工审批——本插件无法替其他程序禁止通知。
+
+### 任务通知的内容与边界
+
+- **完成**文案是"本轮回复已完成"，指**主会话完成一次实际执行的一轮**；
+  不代表你的任务目标已全部达成，也不代表后台子代理都已结束。
+- 正文只含任务名（会话标题）与固定提示，**不含**回答正文、工具命令、提示词、凭据、
+  绝对目录或原始错误堆栈。任务名取最新 `session/title`，取不到则用会话短 ID。
+- 通知**默认静音**（`taskNotificationSound: silent`）。
+- "已发送"只代表**已提交给 Windows**；系统关闭通知、勿扰/专注模式或权限限制都会让
+  横幅不出现，**不保证你看到或听到**。
+- 同一轮只提醒一次（TTL 24h / 容量 4096，进程内 best-effort 去重，不落库）。
+- 第一版任务通知**没有**批准/拒绝按钮，也**没有**点击跳转。
+- 热加载中途未观察到 `step/start` 的轮次**不补发**完成提醒；卸载时丢弃待发通知，
+  **不补播历史**。
 
 > `tools` 里的 `write` / `edit` 是**文件写操作的真实工具名**（`read`/`write`/`edit`/`read_image`
 > 都来自 `dsh-tool-fs`）。写成 `fs*` 或 `files*` 匹配不到任何工具——审批会静默漏过去。
