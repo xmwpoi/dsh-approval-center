@@ -18,7 +18,8 @@ import { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url))
-const PLUGIN_LIB_URL = pathToFileURL(join(REPO_ROOT, 'lib', 'index.js')).href
+// T7a 候选包烟测可指向干净目录安装后的入口；CI 默认测试本次构建产物。
+const PLUGIN_LIB_URL = pathToFileURL(process.env.DSH_PLUGIN_ENTRY ?? join(REPO_ROOT, 'lib', 'index.js')).href
 
 /** dsh-session 的 seq/eventAt/append 最小内存实现（审计配对断言用真实事件流） */
 export class FakeSessionLog {

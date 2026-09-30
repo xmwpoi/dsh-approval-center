@@ -33,7 +33,18 @@ jobs:
       # .npmrc 里的 omit=peer 会挡住 @deepseek-ai/dsh 那棵 ~476MB 的依赖树。
       - run: npm ci
 
+      - run: npm run typecheck
       - run: npm run build
+      - run: npm run test:unit
+
+      - name: Install exact DSH 0.1.7-rc.2 test fixture
+        working-directory: test/integration
+        run: |
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'target fixture install failed' }
+          node -e "for(const n of ['dsh-llm','dsh-scope','dsh-session','dsh-user-approval']) { const v=require('./node_modules/@deepseek-ai/'+n+'/package.json').version; if(v!=='0.1.7-rc.2') throw new Error(n+' version drift: '+v) }"
+          if ($LASTEXITCODE -ne 0) { throw 'target fixture version drift' }
+      - run: npm run test:integration
 
       # files 里已含 lib/，npm pack 仍会跑一次 prepare（tsc），产物一致。
       - name: Pack
