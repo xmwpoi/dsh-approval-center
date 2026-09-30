@@ -14,7 +14,8 @@ export interface SessionLike {
     readonly id?: string;
     /** 始终存在（宿主保证）；`origin === 'subagent'` 是本插件唯一的子代理判据。 */
     readonly header?: SessionHeaderLike;
-    /** 公开事件快照 API；用于首次遇到会话时回读最后一条 session/title。 */
+    /** 公开事件快照 API。⚠ 宿主已标记 @deprecated "new calls are prohibited"（0.1.7-rc.2）；
+     *  本插件接线层不得调用它——此字段仅为类型完整性与既有消费者保留。 */
     snapshotEvents?: (fromSeq?: number, toSeqExclusive?: number) => readonly SessionEventLike[];
 }
 /** SessionHeader 的最小面（dsh-session types.d.ts）。root 会话 origin 缺省。 */
@@ -145,10 +146,16 @@ export declare function resolveRequestSession(req: {
     };
 } | undefined, lookup?: AgentLookup): SessionLike | undefined;
 /**
- * 从事件流取**最后一条** `session/title` 的 title（契约 §2.5 冻结读取顺序）。
+ * 从事件流取**最后一条** `session/title` 的 title（契约 §2.5）。
  *
- * 宿主 `Session` **没有** `title` 属性（只有 `header`，且 SessionHeader 不含 title），
- * 标题只能从事件流取。首次遇到某会话时用公开 `session.snapshotEvents()` 回读。
+ * ⚠ **R2 裁决（有实证，见契约 §2.5）**：宿主已把 `snapshotEvents()` 标记为
+ *   `@deprecated … but new calls are prohibited`（0.1.7-rc.2）。
+ * 本插件**不得新增**对 `snapshotEvents()` 的调用，因此接线层**不再**用本函数做冷读。
+ * 本函数保留给"已经持有事件数组（来自受支持来源）"的消费者，
+ * 以及作为纯函数被单测覆盖；调用方必须自行保证事件来源是受支持的。
+ *
+ * 宿主 `Session` **没有** `title` 属性（只有 `header`，且 SessionHeader 不含 title）。
  * 找不到、标题非字符串、或归一化后为空 → undefined（调用方回退 `会话 <短ID>`）。
+ * @deprecated 不要喂给它 `session.snapshotEvents()` 的结果（宿主禁止新增该调用）。
  */
 export declare function latestTitleFromEvents(events: readonly SessionEventLike[] | undefined): string | undefined;

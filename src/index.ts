@@ -22,7 +22,6 @@ import {
   approvalResultLabel,
   classifySessionOrigin,
   effectiveDialogOutcome,
-  latestTitleFromEvents,
   matchTool,
   resolveRequestSession,
   selectDisplayReason,
@@ -213,7 +212,14 @@ export function apply(ctx: CordisLikeContext, config: Config, deps: ApplyDeps = 
     : undefined
 
   // 会话标题缓存：容量有界 + session/disposed 清理（契约 §2.5/§4 A 段）。
-  // 宿主 Session 没有 title 属性，标题只能从 session/title 事件或事件快照取。
+  // 宿主 Session 没有 title 属性，标题只能来自 `session/title` 事件流。
+  //
+  // ⚠ 契约 §2.5 R2 裁决：宿主已把 `snapshotEvents()` 标记为
+  //   "@deprecated … but new calls are prohibited"
+  // （dsh-session index.d.ts，0.1.7-rc.2）。本插件**不得新增**对它的调用，
+  // 因此这里**没有**"首次遇到会话回读事件快照"的冷读路径——缓存只由事件流喂。
+  // 后果（如实记录）：插件挂载**之前**就已产生的标题读不到，
+  // 此时回退 `会话 <短ID>`；这不阻断任何通知或审批。
   const TITLE_CACHE_MAX = 256
   const titleCache = new Map<string, string>()
   const rememberTitle = (sessionId: string, title: string): void => {
@@ -223,14 +229,7 @@ export function apply(ctx: CordisLikeContext, config: Config, deps: ApplyDeps = 
     }
     titleCache.set(sessionId, title)
   }
-  const titleOf = (session: SessionLike, sessionId: string): string | undefined => {
-    const cached = titleCache.get(sessionId)
-    if (cached !== undefined) return cached
-    // 首次遇到该会话：用公开 snapshotEvents() 回读最后一条 session/title
-    const found = latestTitleFromEvents(session.snapshotEvents?.() as readonly SessionEventLike[] | undefined)
-    if (found !== undefined) rememberTitle(sessionId, found)
-    return found
-  }
+  const titleOf = (sessionId: string): string | undefined => titleCache.get(sessionId)
 
   // ── 主会话监听入口（§2.2 冻结）：只监听公开的 session/event，不做任何猜测 ──
   // 回调必须**同步返回**（该事件是 emit 模式，宿主不 await 监听器）：绝不 await PowerShell。
@@ -276,7 +275,7 @@ export function apply(ctx: CordisLikeContext, config: Config, deps: ApplyDeps = 
             turn,
             origin,
             reasonKind: kind,
-            title: titleOf(session, sessionId),
+            title: titleOf(sessionId),
           } satisfies TurnEventInput)
           return
         }
