@@ -1,7 +1,24 @@
 # 审计存储单实例约束与回滚说明（T4 文档素材草案）
 
-编制：Agent D（T4）。日期：2026-09-29。基线：插件 `f608abd`（v0.3.0），目标宿主 DSH 0.1.7-rc.2。
+编制：Agent D（T4）。日期：2026-09-29；2026-09-30 合并后复核并补齐操作清单。基线：插件 `f608abd`（v0.3.0），目标宿主 DSH 0.1.7-rc.2。
 本文是**草案**，供 Agent A 在 T7 整合进正式 README/CHANGELOG；冻结签名见 [contract-017.md](../contract-017.md) §4.4。
+
+## 0. 合并后存储调用复核结论（2026-09-30）
+
+对合并树 `adapt/dsh-017-host@352b2da` 的存储调用点逐项复核：
+
+| 调用点 | 复核结论 |
+|---|---|
+| 懒加载建 store，`owner: { identity: 'dsh-approval-center' }` | ✓ 符合契约 §4.4 |
+| insert 失败（含 StoreLockError）→ 告警 + 返回 `'unavailable'`，不弹审批 | ✓ 符合计划 §3.4 |
+| settle 失败 → 告警；批准结果未落审计时改判 `'unavailable'`，不放行 | ✓ 符合计划 §3.4（reject/timeout 无需降级，本就 fail-closed） |
+| close 后 settle 抛 `StoreClosedError` → 被 index 捕获只告警 | ✓ 符合契约 §4.6 步骤 4 |
+| 关闭顺序：`queue.close()` 等活动 worker 结算 → `store.close()` | ✓ 符合修订版 §4.6（5af1091 修订后无需额外 pending 扫尾） |
+| 审计保存原始 `reason`，displayReason 只进展示层 | ✓ 符合契约 §2.2 |
+| `src/store.ts` 自合并以来零改动 | ✓ diff `adapt/dsh-017-store..HEAD` 为空 |
+| 合并树全量测试 | ✓ 89/89 PASS，`tsc --noEmit` PASS |
+
+**无具体失败，未修改存储代码。** 一条不阻塞的观察（A 可酌情处理，属 index.ts 文案）：StoreLockError 在懒加载下于首次审批时才触发，warn 文案为"审计记录写入失败"，诊断信息里已含锁 owner 明细，可定位但措辞不精确。
 
 ## 1. 同 dataDir 单活跃实例约束
 
@@ -15,7 +32,7 @@
 ### 1.2 本轮方案：dataDir 内锁文件（不做分布式租约）
 
 - 打开数据库**之前**，在 dataDir 内创建 `approval-center.lock`（`O_EXCL`，天然防并发抢占）。
-- 锁内容（JSON）：`schema`、`identity`（owner 身份，默认 `主机名:pid`）、`hostname`、`pid`、`acquiredAt`、`nonce`（随机，防止误删他人锁）。
+- 锁内容（JSON）：`schema`、`identity`（owner 身份）、`hostname`、`pid`、`acquiredAt`、`nonce`（随机，防止误删他人锁）。
 - 锁被占用时：新实例抛 `StoreLockError`（错误信息含对方 owner 诊断），**不打开、不改写任何数据**。
 - `close()` 时按 nonce 匹配删除自己的锁文件。
 
@@ -29,7 +46,7 @@
 
 | 阶段 | 行为 |
 |---|---|
-| 打开 | 创建锁文件（失败=冲突，进入 2.2 判定） |
+| 首次审批触发懒加载打开 | 创建锁文件（失败=冲突，进入 2.2 判定） |
 | 运行 | 锁文件保持存在 |
 | 正常关闭/卸载 | 删除自己的锁文件（nonce 匹配才删） |
 
@@ -57,35 +74,44 @@
   - `unavailable`（恢复产生）：插件自身未能完成决策。
 - 审计用途：升级后可据 `unavailable` 行排查"该请求当时是否实际执行了工具"，避免把失控执行误读为正常审批流。
 
-## 4. 升级前必须停旧实例
+## 4. 升级清单（0.3.0 → 候选版，目标宿主 0.1.7-rc.2）
 
-旧版 0.3.0 **没有锁机制**：新锁只能约束"新版 vs 新版"，约束不了"新版 vs 旧版"混跑（旧版打开数据库仍会全量改写 pending）。升级操作顺序：
+前置（停机面）：
 
-1. 停用/卸载旧实例；
-2. 等待未决审批结束（或确认遗留 pending 可接受，它们会在新版首次打开时被恢复为 `unavailable`）；
-3. 安装候选版；
-4. 验证：启动后日志无 StoreLockError、审批/审计各走一条真实记录。
+- [ ] 记录当前插件版本与安装来源（commit/tgz SHA256），备份 profile 的 package/lock/patch 与兼容记录
+- [ ] 确认无未决审批：通知中心没有等待中的审批 Toast（等不到就先处理或接受 §3 的恢复语义）
+- [ ] **停旧实例**：禁用/卸载 0.3.0（旧版无锁，新旧混跑不受保护，必须先停）
+- [ ] 检查 dataDir 无残留锁：`approval-center.lock` 不存在；存在→按 §2.2 排查（先确认无活跃进程，再手工删除）
+- [ ] （推荐）按 §5 完成升级前备份
 
-**本轮不承诺新旧版本混跑兼容。**
+安装与验证（运行面）：
 
-## 5. 一致性备份
+- [ ] 安装候选 tgz（记录 SHA256）；先用独立 DSH_HOME + 独立 dataDir 的测试环境完整走一遍
+- [ ] dump-config 确认：仅一个 approval-center 实例、peer 满足 0.1.7-rc.2、无版本豁免、schema 无错误
+- [ ] 触发真实审批各一条：批准、拒绝——宿主结果与审计行终态一致
+- [ ] 确认 dataDir 出现 `approval-center.lock` 且运行期间存在、正常关闭后消失
+- [ ] 启动/运行日志无 `StoreLockError` / `StoreWriteError` / 审计告警
+- [ ] 重启宿主一次：已终态历史记录原样保留，无误改
 
-WAL 模式下 `approvals.db` 主文件可能落后于 `-wal` 文件，**只复制主文件会得到不一致快照**。正确做法（二选一）：
+## 5. WAL 一致性备份清单
 
-- **停机备份**：停止插件实例后，完整复制 `approvals.db` + `approvals.db-wal` + `approvals.db-shm` 三件套；
-- **在线备份**：实例运行中用 SQLite backup API（如 `VACUUM INTO 'backup.db'`）生成一致快照。
+- [ ] **首选停机备份**：停插件实例后完整复制 `approvals.db` + `approvals.db-wal` + `approvals.db-shm` 三件套
+- [ ] **运行中备份必须走 SQLite backup 通道**，两种等价方式（本机 Node v24.20.0 实测可用）：
+  - Node 自带 API：`node -e "const {DatabaseSync,backup}=require('node:sqlite');(async()=>{const db=new DatabaseSync('<dataDir>/approvals.db');await backup(db,'<backup>/approvals-<日期>.db');db.close()})()"`
+  - sqlite3 CLI：`sqlite3 <dataDir>/approvals.db "VACUUM INTO '<backup>/approvals-<日期>.db'"`
+- [ ] **禁止只复制 `approvals.db` 主文件**：WAL 下最近结算可能还在 `-wal` 里，得到失真旧快照
+- [ ] 恢复演练：在隔离目录用备份文件启动新实例，核对记录数、终态分布、无残留 pending（有则按 §3 语义变 unavailable）
+- [ ] 备份标签记录：插件 commit、宿主版本、DSH_HOME/dataDir、备份时间
 
-恢复：停机状态下用备份三件套（或 `VACUUM INTO` 的单文件）覆盖原位置，重启实例后核对记录数与终态分布。
+## 6. 回滚清单（候选版 → 0.3.0）
 
-## 6. 旧版/候选版数据读取与回滚
-
-- **表结构不变、状态词汇表不变**（`pending/approved/rejected/timeout/dismissed/cancelled/unavailable` 七值）：0.3.0 旧版可读候选版写入的库，反之亦然（已由测试 10 覆盖"旧版数据新版可读"；反向读取 PENDING，见 §7）。
-- **回滚到 0.3.0 的已知风险**（如实警告）：旧版打开数据库时会把所有 pending 全量标为 `timeout`（含多实例误伤行为，见 §1.1 复现）。回滚前确认没有等待中的审批。
-- 回滚步骤简表：
-  1. 停候选实例（等待未决审批结束）；
-  2. 停机备份当前 dataDir（§5 方法）；
-  3. 恢复备份的 profile 配置与旧版插件包；
-  4. 重启后验证一条真实批准/拒绝，并确认审计库可读。
+- [ ] 停候选实例，等待未决审批结束（来不及就先备份再停——旧版会把 pending 全标 timeout，见下）
+- [ ] **停机备份当前库**（§5 三件套）：回滚后旧版打开即把所有 pending 全量改写为 `timeout`（含 §1.1 的多实例误伤行为），备份是唯一保真手段
+- [ ] 恢复备份的 profile package/lock/patch（0.3.0）
+- [ ] 重启后验证一条真实批准/拒绝走通
+- [ ] 确认 URI 注册指向当前有效安装，不指向已删除的测试目录
+- [ ] 核对审计库可读（表结构与状态词汇两版一致，旧版可读候选版写入的库；反向读取见 §7 PENDING）
+- [ ] 记录回滚原因与时间，关联候选 tgz SHA256
 
 ## 7. PENDING（未验证项，不冒称已验证）
 
@@ -93,6 +119,6 @@ WAL 模式下 `approvals.db` 主文件可能落后于 `-wal` 文件，**只复�
 |---|---|
 | 新旧版本实际混跑行为 | PENDING（本轮明确不承诺兼容，未测） |
 | 真实 kill -9 崩溃后的锁回收（非模拟死 pid） | PENDING（测试用已退出子进程模拟死 pid） |
-| 备份/恢复演练 | PENDING |
+| 备份恢复的实际演练 | PENDING（备份命令本身已实测可用，见 §5） |
 | 旧版读取候选版写入的库 | PENDING（结构/词汇不变，理论可读；未实测） |
 | Windows 多用户场景下锁文件权限行为 | PENDING |
