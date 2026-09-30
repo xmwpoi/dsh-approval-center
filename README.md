@@ -2,12 +2,29 @@
 
 **DeepSeek Harness (dsh) 插件 — 审批中控台**
 
-Windows 专用。在多个子代理并行运行时，拦截需要人类审批的高风险操作（执行命令 `pwsh`、
-写文件 `write`/`edit` 等，取决于 `tools` 配置），以 **Windows 通知中心通知**的形式弹出
-带「批准 / 拒绝」按钮的申请；并在子代理任务完成时发通知。**不弹任何窗口**——
-审批全程在通知中心完成。
+将 DSH 发出的审批请求集中显示在 **Windows 通知中心**，点击「批准 / 拒绝」即可回传结果；支持并行审批、撤回与卸载清理、SQLite 审计，以及可选的任务启动/结束通知。插件只处理宿主已经要求审批的操作，不自行扩大工具权限。
 
-> `0.3.1-rc.1` 为未发布候选，仅声明兼容 DSH `0.1.7-rc.2`。跨代码页映射修复已通过 GitHub Actions（98/98 单测、21/21 目标版集成），新包 Windows 通知/URI 实机复测待签收。真实子代理会话通知（V16）及生产升级后回装仍未验证。下面的 `v0.3.0` 安装示例是已发布版本。
+默认只显示待审批通知；任务通知和结果回执需在配置中开启。VBS 主处理器不弹控制台窗口；系统没有可用 VBScript 时，PowerShell 回退路径可能短暂闪现控制台。
+
+> **当前预发布：`0.3.1-rc.1`，仅支持 DSH `0.1.7-rc.2`。** 已通过 98/98 自动单测、21/21 真实宿主非交互集成，以及新包 Windows 通知/URI 受影响路径实机复测。真实子代理会话、大批次实机及生产升级后回装仍未验证；完整范围见 [验证与已知限制](#验证与已知限制)。本项目通过 GitHub Releases 提供安装包，未发布到 npm 注册表。
+
+## 下载与运行要求
+
+- [打开 `v0.3.1-rc.1` 预发布页面](https://github.com/xmwpoi/dsh-approval-center/releases/tag/v0.3.1-rc.1)
+- [下载插件安装包 `.tgz`](https://github.com/xmwpoi/dsh-approval-center/releases/download/v0.3.1-rc.1/dsh-approval-center-0.3.1-rc.1.tgz)
+- [下载 SHA256 校验清单](https://github.com/xmwpoi/dsh-approval-center/releases/download/v0.3.1-rc.1/SHA256SUMS.txt)
+
+安装插件请选择 `.tgz` 附件。GitHub 自动生成的 **Source code** 压缩包是源码，不能替代已构建的插件包。
+
+| 组件 | 要求 |
+|---|---|
+| 系统 | Windows，通知中心可用；实机验收环境为 Windows 11 |
+| 宿主 | **DSH `0.1.7-rc.2`，精确版本** |
+| Node.js | ≥ 24 |
+| 插件管理器 | PATH 上可用的 `pnpm`（DSH CLI 需要） |
+| 通知处理器 | Windows PowerShell 5.1；优先使用可用的 VBScript/wscript |
+
+`0.1.5-rc.1` 只有观察性回归记录，不在本预发布版支持范围内。升级前先检查 `dsh --version`、`node --version` 和 `pnpm --version`。
 
 ## 功能
 
@@ -15,7 +32,7 @@ Windows 专用。在多个子代理并行运行时，拦截需要人类审批的
 |---|---|---|
 | **高风险操作审批** | `approval/request` waterfall | Windows 通知中心通知（带「批准 / 拒绝」按钮） |
 | **审批结果回执** | 审批结算后 | Windows 通知中心通知（可关） |
-| **任务完成通知** | `subagent/end` | Windows 通知中心通知 |
+| **任务结束通知** | `subagent/end` | Windows 通知中心通知（默认关闭，按结束原因显示） |
 | **任务启动通知** | `subagent/start` | Windows 通知中心通知（可选） |
 
 ## 关键机制一：为什么必须 `prepend`
@@ -43,7 +60,7 @@ Windows 专用。在多个子代理并行运行时，拦截需要人类审批的
 `EventRegistrationToken`），但事件**永不触发**——这是未打包 Win32 应用的已知限制
 （要收事件得注册 COM 激活器）。因此改为：按钮携带
 `dshapproval:approve/<id>` 这样的 URI，由 Windows 唤起已注册的 URI 处理器
-（`scripts/approval-uri-handler.ps1`）把决定写进状态文件；`scripts/approval-toast.ps1`
+（VBS 主处理器 / PowerShell 回退处理器）把决定写进状态文件；`scripts/approval-toast.ps1`
 只轮询该状态文件。
 
 副作用是**不再需要 node-notifier / SnoreToast**（已从依赖里移除），也不需要
@@ -51,33 +68,33 @@ Windows 专用。在多个子代理并行运行时，拦截需要人类审批的
 
 ## 安装
 
-推荐用 DSH 自带的插件管理器。下面三种方式都**不需要**手动 clone 或构建。
+推荐用 DSH 自带的插件管理器。方式 A/B 无需手动克隆或构建；源码目录方式仅供开发者使用。
 
-### 方式 A：从 GitHub 安装（推荐）
+### 方式 A：从固定 Release 安装（推荐）
 
 ```powershell
-dsh plugin --profile web add github:xmwpoi/dsh-approval-center
+dsh plugin --profile web add https://github.com/xmwpoi/dsh-approval-center/releases/download/v0.3.1-rc.1/dsh-approval-center-0.3.1-rc.1.tgz
 ```
 
-或在 Web 侧栏 **插件 → 添加插件** 里填同一串。pnpm 会把包拉进 profile 的
-`node_modules` 并自动构建，**装完不需要保留任何源码目录**。
+也可在 Web 侧栏 **插件 → 添加插件** 填入同一个 Release 安装包 URL。包内已包含构建产物 `lib/`，使用者无需克隆仓库或手动编译；安装目标为指定 profile。
 
 `dsh plugin add` 会自动应用本包的 `cordis.patch.yml`（`dsh.bundle.patch`）并写入
 `dsh.profile.bundles`——**装完不要再手动往 profile 的 cordis.patch.yml 里加
 insert，否则插件会挂载两次**（两个监听器抢同一 waterfall，完成通知还会发两遍）。
 
-钉住某个 tag 或提交：
+若选择 GitHub 源码依赖，请固定标签，避免默认分支后续变化：
 
 ```powershell
-dsh plugin --profile web add github:xmwpoi/dsh-approval-center#v0.3.0
+dsh plugin --profile web add github:xmwpoi/dsh-approval-center#v0.3.1-rc.1
 ```
 
-### 方式 B：从 Release 压缩包安装
+### 方式 B：先下载、校验，再从本地安装
 
-没有 git、或连不上 `github.com` 时用这条。压缩包已含 `lib/`，**不跑任何构建脚本**：
+下载上面的 `.tgz` 和 `SHA256SUMS.txt` 到本机。对照清单核验 SHA256，再把实际路径交给插件管理器：
 
 ```powershell
-dsh plugin --profile web add https://github.com/xmwpoi/dsh-approval-center/releases/download/v0.3.0/dsh-approval-center-0.3.0.tgz
+Get-FileHash -LiteralPath 'C:\Downloads\dsh-approval-center-0.3.1-rc.1.tgz' -Algorithm SHA256
+dsh plugin --profile web add 'C:\Downloads\dsh-approval-center-0.3.1-rc.1.tgz'
 ```
 
 ### 方式 C：源码目录（**仅开发者**）
@@ -111,8 +128,8 @@ dsh plugin --profile web add "C:\path\to\dsh-approval-center"
 - **装错目录会 exit 0 但完全无效**——`dsh plugin` 的目标由 `$DSH_HOME` 决定。
   默认安装不用设它；只有在你有多个 DSH_HOME 时才需要显式指定。
 - **本机没有 `dsh` 命令时**（源码 checkout 的开发机），把 `dsh plugin ...` 换成
-  `node <dsh-cli>\lib\bin.js plugin ...`，把 `dsh --profile ... --dump-config` 换成
-  `node <dsh-cli>\lib\bin.js --profile ... --dump-config`。
+  `node <DSH安装目录>\node_modules\@deepseek-ai\dsh\lib\bin.js plugin ...`，把配置核验命令换成
+  `node <DSH安装目录>\node_modules\@deepseek-ai\dsh\lib\bin.js --profile ... --dump-config`。
 - 方式 A 安装时 pnpm 可能拦下本包的构建脚本（`prepare`）。DSH 会列出待批准的包并提供
   **允许这些脚本并重试**——照做即可，那不是出错。
 
@@ -143,13 +160,30 @@ pnpm --version   # 必须打印版本号
 
 ```powershell
 dsh --profile web --dump-config | Select-String 'dsh-approval-center'
-# 只应出现一次
+# 人工检查完整配置：id: approval-center 只应有一个，不要仅按字符串命中次数判断
 ```
 
-卸载：Web 侧栏 **插件 → dsh-approval-center → 卸载**。
+卸载：Web 侧栏 **插件 → dsh-approval-center → 卸载**，或使用命令：
+
+```powershell
+dsh plugin --profile web remove dsh-approval-center
+```
 
 > 首次运行注册的 URI 方案（HKCU `dshapproval`）与 AUMID 不会随卸载自动移除——
 > 它们只在 Windows 唤起审批按钮时被用到，留着不影响其他功能。
+
+## 从旧版升级与回滚
+
+同一 `dataDir` 只允许一个新版实例。旧版没有实例锁，**升级前须先停旧实例，不要新旧混跑**。
+
+1. 等当前审批结算后停止宿主；备份目标 profile 的配置、package/lock/patch 文件及审计目录。
+2. 宿主停止后，若审计库旁存在 `approvals.db-wal`、`approvals.db-shm`，将它们与 `approvals.db` 一起备份。运行中的备份应使用 SQLite backup 通道，不能只复制主 DB 文件。
+3. 在目标 profile 卸载旧插件，安装本预发布版；检查插件只挂载一个实例，再重启宿主。
+4. 验证一次批准、一次拒绝、审计终态和历史数据读取；遇到问题先停止候选并备份当前数据，再按备份恢复旧版 profile 与安装来源。
+
+旧版 `0.3.0` 打开库时会将残留 pending 改为 timeout，因此回装旧版前必须先备份。完整操作见 [升级、WAL 备份与回滚清单](docs/compat/drafts/store-and-rollback.md)。生产升级后回装演练尚未完成；本次验证覆盖隔离安装/卸载与注册恢复。
+
+SQLite 保存原始审批原因与结果；`displayReason` 用于界面展示，不替代原始审计原因。崩溃恢复的 pending 会记为 `unavailable`，不会伪装成用户拒绝或超时。审计插入失败不弹审批，批准结果结算失败会降级为渠道不可用，避免未经记录的放行。
 
 ## 配置
 
@@ -191,12 +225,17 @@ dsh --profile web --dump-config | Select-String 'dsh-approval-center'
 | 3 | 结果内容异常 | unavailable | unavailable |
 | 4 及其他退出码 | 投递/进程故障 | unavailable | unavailable |
 | — | 请求方中止（AbortSignal） | cancelled | cancelled |
+| — | 插件卸载/关闭导致未决请求中止 | unavailable | unavailable |
 
 与官方语义对齐：`unavailable` = "本渠道未产生决策"（模型收到 deny）；`cancelled`
 专指请求方主动撤回（AbortSignal），不用于超时。"没人应答"与"用户拒绝"严格区分，
 审计记录不会说谎。
 
-## 已知限制
+## 验证与已知限制
+
+本次预发布的验证范围：远端 Windows CI **98/98 单测 + 21/21 目标版集成**；Windows 实机覆盖真实 Toast/URI、中文与空格路径的 VBS/PS 双路回传、ASCII 回归、强杀后的定向双清与幂等、URI/AUMID 恢复。文档更新后的发布包须与该已验收包的运行文件逐字节一致。证据见 [最终发布评估](docs/compat/evidence/final-release-evaluation.md) 与 [新包实机记录](docs/compat/evidence/windows/t6/unicode-retest-g2.md)。
+
+仍未验证：完整真实子代理会话（V16，隔离环境无凭据）、20 路大批次实机、生产升级后回装旧版。并发宿主实测采用受控小批次；子代理事件文案有自动覆盖，不能据此宣称真实会话验收完成。
 
 - **只能探测「点了按钮」，探测不到「划掉通知」**：未打包应用收不到 WinRT 的
   `Dismissed` 事件（见关键机制二），所以用户直接关闭通知时本插件不会立刻知道，
@@ -211,8 +250,7 @@ dsh --profile web --dump-config | Select-String 'dsh-approval-center'
   （开启通知时还有 `toast.ps1`）：缺文件、空文件、含非 ASCII 却无 BOM 都拒绝挂载。
   **注意**：在受限文件沙箱下，脚本的 PowerShell 语法检查会因 EPERM 降级为告警
   （字节级检查仍生效）——插件跑在未受限的宿主进程里，正常路径不会遇到。
-- 通知中心必须可用：系统关掉通知、专注助手（Focus Assist）拦截、或短时间弹太多被
-  系统限流时，通知可能不显示——此时审批会以 `unavailable` fail-closed（不会误批）。
+- 通知中心必须可用：系统关掉通知、专注助手拦截或通知被限流时，通知可能不显示。默认 `timeoutAction: reject` 下，故障/超时不会自动批准；显式设置 `approve` 则真实超时会自动批准。
 - 首次运行会在 HKCU 注册 URI 方案 `dshapproval`（指向本包的
   `scripts/approval-uri-handler.vbs`，由 `wscript.exe` 运行；VBScript 不可用时自动回退到
   `scripts/approval-uri-handler.ps1`）与 AUMID `Dev.DSH.ApprovalCenter`，均无需管理员。
@@ -227,6 +265,16 @@ dsh --profile web --dump-config | Select-String 'dsh-approval-center'
 
 ## 运行测试
 
+开发验证需要先安装隔离的目标宿主 fixture：
+
+```powershell
+npm ci
+npm --prefix test/integration ci --ignore-scripts
+npm test
+```
+
+`npm test` 包含构建、类型检查、单测与目标版非交互集成。真实通知测试需要独占桌面时段；URI 注册是同一 Windows 用户共享资源，先备份、测试后恢复。
+
 ```bash
 npm install
 npm run build
@@ -238,6 +286,10 @@ npm run test:approval -- 60
 脚本会同时打印**审批结果**和**上报 harness 的结果**（如 `timeout → unavailable`），
 并以退出码区分这一轮有没有产生结论（`0` = 批准/拒绝，`1` = 超时/故障）。
 建议分别验证：点**批准** → `allowed-once`；点**拒绝** → `rejected`；**什么都不点** → `timeout`。
+
+## 反馈问题
+
+请在 [GitHub Issues](https://github.com/xmwpoi/dsh-approval-center/issues) 中提供插件/DSH/Windows/Node 版本、安装方式、复现步骤、预期与实际结果，以及已脱敏的宿主 stderr 日志。不要上传 API key、完整生产 profile 或审批数据库；它们可能包含敏感内容。
 
 ## License
 
