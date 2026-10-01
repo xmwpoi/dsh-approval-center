@@ -178,6 +178,20 @@ export interface DialogRequest {
    * 缺省时脚本沿用随机 GUID（手动脚本兼容路径）。
    */
   requestToken?: string
+  /**
+   * R5 §3 冻结的可选结构化字段：**固定安全信息**（拒绝含义 + 真实超时动作）。
+   * 主审批卡片**必须**提供；作为独立 PS 参数 `-DecisionSummary` 传递，
+   * 使脚本把它放进**第一个** `<text>` 且**不参与**截断预算。
+   * 缺省（legacy 调用，如手动脚本/结果回执）走旧单 `Message` 路径。
+   */
+  decisionSummary?: string
+  /**
+   * R5 §3 冻结的可选结构化字段：**动态摘要**（任务/操作/原因，各字段独立限宽）。
+   * 作为独立 PS 参数 `-ContextSummary` 传递，放进**第二个** `<text>`，
+   * 与 decisionSummary **互不合并、互不分摊**截断预算。
+   * 缺省同上（legacy 路径）。
+   */
+  contextSummary?: string
 }
 
 export interface DialogHandle {
@@ -272,6 +286,12 @@ export function showApprovalToast(req: DialogRequest, deps: DialogDeps = {}): Di
         '-TimeoutSec', String(req.timeoutSec),
         '-TimeoutAction', req.timeoutAction ?? 'reject',
         ...(req.requestToken ? ['-RequestToken', req.requestToken] : []),
+        // R5 §3：结构化字段**独立传参**，脚本据此构造 title→decision→context 三个 <text>。
+        // 两个字段必须**成对**提供才走结构化路径——只给其一会让脚本无法区分
+        // "新版主审批"与"legacy 单正文"，宁可回退 legacy 也不猜测哪段是安全信息。
+        ...(req.decisionSummary !== undefined && req.contextSummary !== undefined
+          ? ['-DecisionSummary', req.decisionSummary, '-ContextSummary', req.contextSummary]
+          : []),
       ], { windowsHide: true, stdio: 'ignore' })
     } catch (error) {
       // 受限环境下 spawn 可能同步抛出：不能让它逃出去，否则

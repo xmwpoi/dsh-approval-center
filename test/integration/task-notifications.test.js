@@ -362,13 +362,15 @@ describe('T3-10 审批身份判定（主会话认领 / 子代理与未知转交�
     const rec = approvalToasts(before)[0]
     assert.ok(rec, '主会话审批必须被认领并弹卡片')
     const a = argsOf(rec)
-    assert.equal(a.title, '需要你审批 · bash')
+    // R5 契约：title = 固定安全标题（不含工具名）；decisionSummary 排最前（安全信息）；
+    // contextSummary = 任务/操作/原因（动态摘要，各字段独立限宽）。
+    assert.equal(a.title, '需要你审批 · 批准仅本次', 'R5 固定安全标题')
+    assert.ok(a.message.startsWith('拒绝不执行；30秒后自动拒绝\n'), 'decisionSummary 必须排在 message 最前（安全信息优先）')
     assert.ok(a.message.includes('任务：修复登录问题'), `应含任务名：${JSON.stringify(a.message)}`)
     assert.ok(a.message.includes('操作：bash'), '应含操作行')
     assert.ok(a.message.includes('原因：需要执行沙箱外操作'), '应含原因行')
-    assert.ok(a.message.includes('选择：批准=本次允许；拒绝=不允许执行'), '应含选择行且批准仅本次')
-    assert.ok(a.message.includes('等待：30秒'), '应含等待行')
-    assert.ok(a.message.includes('超时=自动拒绝'), '默认 timeoutAction=reject 应写自动拒绝')
+    assert.ok(/批准仅本次/.test(a.title), 'title 必须写"批准仅本次"（不得描述成永久授权）')
+    assert.ok(a.message.includes('30秒后自动拒绝'), '默认 timeoutAction=reject 应写自动拒绝')
     assert.ok(!/永久|permanent/i.test(a.message), '不得把批准描述成永久授权')
     rec.child.emit('exit', 0)
     assert.equal(await pending, 'allowed-once')
@@ -427,8 +429,10 @@ describe('T3-10 审批身份判定（主会话认领 / 子代理与未知转交�
     const rec = approvalToasts(before)[0]
     assert.ok(rec)
     const a = argsOf(rec)
-    assert.ok(a.message.includes('超时自动批准'), `approve 必须醒目写超时自动批准：${JSON.stringify(a.message)}`)
-    assert.ok(!a.message.includes('超时=自动拒绝'), 'approve 不得沿用拒绝文案')
+    // R5 契约：decisionSummary 排最前，如实写"自动批准"（B 的 formatApprovalDecision）。
+    // approve 不得沿用拒绝文案：message 必须含"自动批准"且不含"自动拒绝"。
+    assert.ok(a.message.includes('自动批准'), `approve 必须醒目写自动批准：${JSON.stringify(a.message)}`)
+    assert.ok(!a.message.includes('自动拒绝'), 'approve 不得沿用拒绝文案')
     rec.child.emit('exit', 2)
     assert.equal(await pending, 'allowed-once', '真实 timeout + approve → allowed-once')
     closeTurn(s)
@@ -523,7 +527,7 @@ describe('T3-12（R2）标题冷读、registry 查询面与缓存治理', () => 
     await waitForSpawns(channel, before + 1)
     const rec = approvalToasts(before)[0]
     assert.ok(rec, '无 ctx.agents 时主审批必须照常认领（round-1 cordis 崩溃回归）')
-    assert.equal(argsOf(rec).title, '需要你审批 · pwsh')
+    assert.equal(argsOf(rec).title, '需要你审批 · 批准仅本次', 'R5 固定安全标题（不含工具名）')
     rec.child.emit('exit', 0)
     assert.equal(await pending, 'allowed-once')
     assert.equal(readAuditRows(host.dataDir).length, 1)

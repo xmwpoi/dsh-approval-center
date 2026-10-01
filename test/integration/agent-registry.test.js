@@ -69,7 +69,8 @@ describe('T3-R 真实 AgentRegistry 服务注入（发布阻断项）', () => {
     await waitForSpawns(channel, before + 1)
     const rec = approvalToasts(before)[0]
     assert.ok(rec, 'req.agent 仅带 id 时，主会话审批必须经真实 ctx.agents.get 被认领并弹卡片')
-    assert.equal(argsOf(rec).title, '需要你审批 · pwsh')
+    // R5 契约：title 是**固定安全标题**（不含工具名）；工具名在 contextSummary 的"操作："行
+    assert.equal(argsOf(rec).title, '需要你审批 · 批准仅本次')
     rec.child.emit('exit', 0)
     assert.equal(await pending, 'allowed-once', '真实认领并按 exit 0 结算')
     closeTurnOf(s)

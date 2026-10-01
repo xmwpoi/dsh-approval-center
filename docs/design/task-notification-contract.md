@@ -369,21 +369,32 @@ SubagentStopReason = 'completed' | 'aborted' | 'error' | 'max-tokens' | 'refusal
 - **最多等待 12 秒**完成清理；活动进程 `exit`/`error`/`timeout` **只结算一次**；
   所有 timer/listener 清理。
 
-### 3.4 主对话审批卡片内容（冻结，计划书 §2.7）
+### 3.4 主对话审批卡片内容（R5 修订：**固定安全信息优先的结构化三 <text>**）
 
 **认领前置**：按 §2.6 解析 session 并判定主/子。子代理与身份不可确认的请求**不认领**，
 `next()` 恰一次。
 
-结构化内容（ToastGeneric 多行）：
+**R5 变更**：废弃旧"工具名在标题 + 五行正文平分 3 个 <text>"布局——实测超长内容时
+`选择：`/`等待：` 行会被 Windows 视觉截掉（C 的 E3 截图证据）。
+新布局把**固定安全信息**排在最前且不参与截断，动态摘要独立限宽：
 
-```
-需要你审批 · <工具名>
-任务：<标题 或 会话短ID>
-操作：<宿主工具名 / 明确操作摘要>
-原因：<displayReason 的 zh-CN→zh→reason→en 回退>
-选择：批准=本次允许；拒绝=不允许执行
-等待：<timeoutSec>秒；超时=<按实际配置>
-```
+| 字段 | 内容 | 截断 | 传递 |
+|---|---|---|---|
+| **title** | `需要你审批 · 批准仅本次`（**固定**，不含工具名） | 不截断 | `-Title` |
+| **decisionSummary** | `拒绝不执行；<N>秒后自动拒绝\|批准`（**固定安全信息**） | **不截断** | `-DecisionSummary` |
+| **contextSummary** | `任务：<…>\n操作：<…>\n原因：<…>`（动态摘要，各字段独立限宽） | 各字段独立限宽 | `-ContextSummary` |
+
+**结构化传递方式**：Node 侧 `DialogRequest` 新增可选字段
+`decisionSummary?: string` / `contextSummary?: string`，
+sender 以**独立 PS 参数** `-DecisionSummary` / `-ContextSummary` 传给脚本。
+**两个字段必须成对提供**才走结构化路径；只给其一回退 legacy 并告警。
+旧调用（结果回执/手动脚本）不提供新字段，走 legacy 单 `Message` 路径。
+**新版主审批不得落 legacy。**
+
+**新增限宽**：`approvalTask` 20 码点、`approvalToolName` 20 码点、`approvalReason` 36 码点。
+（旧限宽 60/40/100 已废弃——它们允许过长的内容挤掉选择/等待行。）
+
+**硬约束不变**：
 
 示例：
 ```

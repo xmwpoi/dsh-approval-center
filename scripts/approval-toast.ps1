@@ -52,7 +52,13 @@ param(
     # 维护入口（C 布局补丁）：只构造并 LoadXml 校验卡片 XML，**不注册 URI、不写状态
     # 文件、不调用 Show()、不弹任何通知**。用于无独占桌面时验证多行布局与转义。
     # 退出码：0=校验通过，4=校验失败。不属于审批退出码契约（0=批准 1=拒绝…）。
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    # R5 §3 冻结的可选结构化字段。**成对提供**时走新版三 <text> 路径
+    # （title→decisionSummary→contextSummary，标题不吸收正文、decision 不参与截断）；
+    # 缺省（legacy 调用，如结果回执/手动脚本）走旧单 Message 平分路径。
+    # 只给其一 → 回退 legacy 并告警，绝不猜测哪段是安全信息。
+    [string]$DecisionSummary = '',
+    [string]$ContextSummary = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -300,7 +306,42 @@ $maxTextElements = 3
 $maxTitleLines = 2
 $maxDescLinesTotal = 4
 
-function Build-ApprovalToastXml([string]$Title, [string]$Message, [string]$Id) {
+function Build-ApprovalToastXml([string]$Title, [string]$Message, [string]$Id,
+                                [string]$Decision = '', [string]$Context = '') {
+    # ── R5 §3 结构化路径：decisionSummary / contextSummary **成对提供**时走新版 ──
+    # 三个 <text> = title → decision → context。
+    # - title **不吸收**正文（正文再长也不挤掉标题行数）
+    # - decision **不参与**截断预算（它是固定安全信息：拒绝含义 + 真实超时动作）
+    # - context 由 Node 侧按字段独立限宽后传入，脚本**原样**放一个 <text>，
+    #   绝不与 decision 合并分摊预算（旧算法"首行搬标题+余正文平分"正是因此丢行）。
+    # 缺省（legacy 调用）走旧单 Message 平分路径。
+    if ($Decision -cne '' -and $Context -cne '') {
+        $t1 = Escape-Xml ($Title -replace '\r?\n', ' ')
+        $t2 = Escape-Xml ($Decision -replace '\r?\n', ' ')
+        $t3 = Escape-Xml $Context
+        $textBlock = (@(
+            '      <text>' + $t1 + '</text>'
+            '      <text>' + $t2 + '</text>'
+            '      <text>' + $t3 + '</text>'
+        ) -join [Environment]::NewLine)
+        return @"
+<toast scenario="reminder" activationType="protocol">
+  <visual>
+    <binding template="ToastGeneric">
+$textBlock
+    </binding>
+  </visual>
+  <actions>
+    <action content="批准" arguments="$scheme`:approve/$(Escape-Xml $Id)" activationType="protocol" />
+    <action content="拒绝" arguments="$scheme`:reject/$(Escape-Xml $Id)" activationType="protocol" />
+  </actions>
+</toast>
+"@
+    }
+    if ($Decision -cne '' -or $Context -cne '') {
+        Write-Warning 'dsh-approval-center: -DecisionSummary and -ContextSummary must be provided as a pair; falling back to legacy single-message path'
+    }
+
     $titleLines = @(($Title -split "\r?\n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
     if ($titleLines.Count -eq 0) { $titleLines = @('审批请求') }
     if ($titleLines.Count -gt $maxTitleLines) {
@@ -384,7 +425,7 @@ $textBlock
 # ---------------------------------------------------------------------------
 if ($ValidateOnly) {
     try {
-        $xmlText = Build-ApprovalToastXml -Title $Title -Message $Message -Id 'validateonly0000'
+        $xmlText = Build-ApprovalToastXml -Title $Title -Message $Message -Id 'validateonly0000' -Decision $DecisionSummary -Context $ContextSummary
         $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
         $doc.LoadXml($xmlText)
         $nodes = $doc.GetElementsByTagName('text')
@@ -486,7 +527,7 @@ try {
 
     # 卡片 XML 由 Build-ApprovalToastXml 统一构造（多行布局与 ToastGeneric 预算见函数注释）。
     # 传入本次真实 requestToken，协议 URI 的形态与改动前逐字一致。
-    $xmlString = Build-ApprovalToastXml -Title $Title -Message $Message -Id $id
+    $xmlString = Build-ApprovalToastXml -Title $Title -Message $Message -Id $id -Decision $DecisionSummary -Context $ContextSummary
 
     $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
     $xml.LoadXml($xmlString)
