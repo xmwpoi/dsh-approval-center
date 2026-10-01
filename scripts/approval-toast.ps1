@@ -314,6 +314,37 @@ $maxTextElements = 3
 $maxTitleLines = 2
 $maxDescLinesTotal = 4
 
+# ---------------------------------------------------------------------------
+# R7 §17 纯成对参数校验（**无任何副作用**，ValidateOnly 与生产路径共用）。
+#
+# 为什么必须是独立纯函数并放在**生产 try 之前**：R6 的校验写在
+# Build-ApprovalToastXml 里，而生产路径的 `New-Item(StateDir)` / `Register-UriScheme` /
+# `Ensure-AppId` / 状态文件 / 陈旧通知扫描都在调用构造器**之前**执行 ——
+# ValidateOnly 提前校验不代表生产提前校验，非法输入仍能改 HKCU/清旧状态。
+# R7 把这条校验提到所有副作用之前；构造器内保留同一防御（纵深防御，防绕过）。
+#
+# | provided 组合            | 行为 |
+# | 都未提供                 | legacy 兼容（显式兼容路径）→ 返回 'legacy' |
+# | 都提供且非空白            | 结构化 title/decision/context → 返回 'structured' |
+# | 只提供一项 / 任一空白/空串 | fail-loud（throw → 顶层 catch → exit 4，零副作用） |
+function Test-ApprovalPairRule([bool]$DecisionProvided, [bool]$ContextProvided,
+                               [string]$Decision, [string]$Context) {
+    $hasDecision = $DecisionProvided -and ($Decision.Trim().Length -gt 0)
+    $hasContext = $ContextProvided -and ($Context.Trim().Length -gt 0)
+    if ($DecisionProvided -xor $ContextProvided) {
+        throw ("approval card: structural fields must be paired (only one of them was bound; " +
+            "DecisionProvided=$DecisionProvided, ContextProvided=$ContextProvided); " +
+            "refusing to fall back to the legacy layout (R6/R7 rule: one-sided -> unavailable)")
+    }
+    if ($DecisionProvided -and $ContextProvided -and -not ($hasDecision -and $hasContext)) {
+        throw ("approval card: DecisionSummary and ContextSummary were both bound but are blank/empty; " +
+            "explicit blank is invalid input, not 'not provided' " +
+            "(nonBlank decision=$hasDecision, nonBlank context=$hasContext); " +
+            "refusing to fall back to the legacy layout (R6/R7 rule)")
+    }
+    return ($(if ($hasDecision -and $hasContext) { 'structured' } else { 'legacy' }))
+}
+
 function Build-ApprovalToastXml([string]$Title, [string]$Message, [string]$Id,
                                 [string]$Decision = '', [string]$Context = '',
                                 [bool]$DecisionProvided = $false, [bool]$ContextProvided = $false) {
@@ -326,28 +357,13 @@ function Build-ApprovalToastXml([string]$Title, [string]$Message, [string]$Id,
     # | provided 组合            | 行为 |
     # | 都未提供                 | legacy 兼容（显式兼容路径） |
     # | 都提供且非空白            | 结构化 title/decision/context |
-    # | 只提供一项 / 任一空白/空串 | fail-loud（throw → 顶层 catch → exit 4，AUMID/Show 之前） |
+    # R7：成对规则判定收敛到 Test-ApprovalPairRule（与生产前置共用同一实现，
+    # 不留第二份会漂移的拷贝）。这里保留同防御作为纵深防御：即使调用方绕过前置校验，
+    # 构造器仍 fail-loud。
+    $pairMode = Test-ApprovalPairRule -DecisionProvided $DecisionProvided -ContextProvided $ContextProvided `
+                                      -Decision $Decision -Context $Context
     $hasDecision = $DecisionProvided -and ($Decision.Trim().Length -gt 0)
     $hasContext = $ContextProvided -and ($Context.Trim().Length -gt 0)
-    if ($hasDecision -xor $hasContext) {
-        throw ("approval card: DecisionSummary and ContextSummary must be provided together as non-blank strings " +
-            "(DecisionProvided=$DecisionProvided nonBlank=$hasDecision, ContextProvided=$ContextProvided nonBlank=$hasContext); " +
-            "refusing to fall back to the legacy layout (R6 rule: one-sided/blank/unavailable)")
-    }
-    if (($DecisionProvided -xor $ContextProvided)) {
-        throw ("approval card: structural fields must be paired (only one of them was bound); " +
-            "refusing to fall back to the legacy layout (R6 rule)")
-    }
-    # 显式提供但**两侧都空白/空串**：上面两个 xor 都为 false，会掉到 legacy —— 这正是
-    # R6 §9 禁止的"只警告而继续运行"。空值不是"未提供"：显式空对必须与单侧非法同样
-    # fail-loud（exit 4），否则调用方以为结构化已生效、实际渲染 R4 的坏布局且只留一行
-    # Write-Warning。（R6-C 复审实测：显式空串对/空白对曾返回 exit 0 走 legacy。）
-    if ($DecisionProvided -and $ContextProvided -and -not ($hasDecision -and $hasContext)) {
-        throw ("approval card: DecisionSummary and ContextSummary were both bound but are blank/empty; " +
-            "explicit blank is invalid input, not 'not provided' " +
-            "(nonBlank decision=$hasDecision, nonBlank context=$hasContext); " +
-            "refusing to fall back to the legacy layout (R6 rule)")
-    }
     if ($hasDecision -and $hasContext) {
         $t1 = Escape-Xml ($Title -replace '\r?\n', ' ')
         $t2 = Escape-Xml ($Decision -replace '\r?\n', ' ')
@@ -479,6 +495,14 @@ if ($ValidateOnly) {
         exit 4
     }
 }
+
+# ── R7 §17：生产路径的**前置纯校验**（零副作用）────────────────────────────
+# 必须在 New-Item(StateDir) / Register-UriScheme / Ensure-AppId / 状态文件 /
+# 陈旧通知扫描之前执行：ValidateOnly 提前校验不代表生产提前校验，
+# 非法输入不得改 HKCU / 清旧状态。失败 → 顶层 catch → exit 4，零注册/文件/通知副作用。
+# 构造器内保留同一防御（纵深防御）；CleanupToken/ClearAll 等维护入口不受本门影响。
+$pairMode = Test-ApprovalPairRule -DecisionProvided $decisionProvided -ContextProvided $contextProvided `
+                                  -Decision $DecisionSummary -Context $ContextSummary
 
 $resultFile = $null
 $pendingFile = $null

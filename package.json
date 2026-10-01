@@ -65,7 +65,7 @@
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
     "typecheck": "tsc --noEmit",
     "test:unit": "node --test --test-concurrency=1 test/host-contract.test.js test/identity-adapter.test.js test/queue.test.js test/store.test.js test/dialog.test.js test/dialog.scripts.test.js test/dialog.cleanup.test.js test/dialog.uri-handler.test.js test/dialog.unicode-mapping.test.js test/notifications.test.js test/notifications.adversarial.test.js test/notification-format.test.js test/approval-structured-gate.test.js test/task-toast-sender.test.js test/task-toast-script.test.js test/approval-card-layout.test.js",
-    "test:integration": "node --import ./test/integration/hooks/register.mjs --test --test-concurrency=1 test/integration/approval-flow.test.js test/integration/lifecycle.test.js test/integration/task-notifications.test.js test/integration/host-publication.test.js test/integration/agent-registry.test.js test/integration/session-title.test.js test/integration/agent-loop.test.js test/integration/approval-card-regression.test.js",
+    "test:integration": "node --import ./test/integration/hooks/register.mjs --test --test-concurrency=1 test/integration/approval-flow.test.js test/integration/lifecycle.test.js test/integration/task-notifications.test.js test/integration/host-publication.test.js test/integration/agent-registry.test.js test/integration/session-title.test.js test/integration/agent-loop.test.js test/integration/approval-card-regression.test.js test/integration/approval-pair-rule.test.js",
     "test:approval": "node test/approval.test.js",
     "test": "npm run typecheck && npm run build && npm run test:unit && npm run test:integration"
   }
