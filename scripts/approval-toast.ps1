@@ -62,6 +62,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ── R6 §1：顶层实际绑定判定 ──────────────────────────────────────────────
+# 必须在**顶层**做（函数里默认值 `''` 总在，无法区分"显式空串"与"未提供"）。
+# 判定结果以 -DecisionProvided/-ContextProvided 传给 XML 构造器；
+# 结构化/legacy 的最终裁决与 fail-loud 都在构造器内统一执行（ValidateOnly 与真实路径共用）。
+$decisionProvided = $PSBoundParameters.ContainsKey('DecisionSummary')
+$contextProvided = $PSBoundParameters.ContainsKey('ContextSummary')
+
 $scheme = 'dshapproval'
 $appId = 'Dev.DSH.ApprovalCenter'
 # 操作中心分组名。本脚本只清扫自己这个组，绝不碰别的组：
@@ -307,15 +315,40 @@ $maxTitleLines = 2
 $maxDescLinesTotal = 4
 
 function Build-ApprovalToastXml([string]$Title, [string]$Message, [string]$Id,
-                                [string]$Decision = '', [string]$Context = '') {
-    # ── R5 §3 结构化路径：decisionSummary / contextSummary **成对提供**时走新版 ──
-    # 三个 <text> = title → decision → context。
-    # - title **不吸收**正文（正文再长也不挤掉标题行数）
-    # - decision **不参与**截断预算（它是固定安全信息：拒绝含义 + 真实超时动作）
-    # - context 由 Node 侧按字段独立限宽后传入，脚本**原样**放一个 <text>，
-    #   绝不与 decision 合并分摊预算（旧算法"首行搬标题+余正文平分"正是因此丢行）。
-    # 缺省（legacy 调用）走旧单 Message 平分路径。
-    if ($Decision -cne '' -and $Context -cne '') {
+                                [string]$Decision = '', [string]$Context = '',
+                                [bool]$DecisionProvided = $false, [bool]$ContextProvided = $false) {
+    # ── R6 §1 唯一规则：结构化/legacy 的判定用**顶层实际绑定**，不用空串猜测 ──
+    # 调用方（顶层）用 $PSBoundParameters.ContainsKey() 判定参数是否**显式出现**，
+    # 并把结果作为 -DecisionProvided/-ContextProvided 传进来。
+    # 为什么不能在函数里用空串判定：函数调用时默认值 `''` 总会被传，
+    # "显式空串"与"未提供"在这里**不可区分** —— R5 的 C 补丁用 IsNullOrWhiteSpace
+    # 把显式空白当"未提供"，违反 R6 冻结规则（显式空白 = 非法 → unavailable）。
+    # | provided 组合            | 行为 |
+    # | 都未提供                 | legacy 兼容（显式兼容路径） |
+    # | 都提供且非空白            | 结构化 title/decision/context |
+    # | 只提供一项 / 任一空白/空串 | fail-loud（throw → 顶层 catch → exit 4，AUMID/Show 之前） |
+    $hasDecision = $DecisionProvided -and ($Decision.Trim().Length -gt 0)
+    $hasContext = $ContextProvided -and ($Context.Trim().Length -gt 0)
+    if ($hasDecision -xor $hasContext) {
+        throw ("approval card: DecisionSummary and ContextSummary must be provided together as non-blank strings " +
+            "(DecisionProvided=$DecisionProvided nonBlank=$hasDecision, ContextProvided=$ContextProvided nonBlank=$hasContext); " +
+            "refusing to fall back to the legacy layout (R6 rule: one-sided/blank/unavailable)")
+    }
+    if (($DecisionProvided -xor $ContextProvided)) {
+        throw ("approval card: structural fields must be paired (only one of them was bound); " +
+            "refusing to fall back to the legacy layout (R6 rule)")
+    }
+    # 显式提供但**两侧都空白/空串**：上面两个 xor 都为 false，会掉到 legacy —— 这正是
+    # R6 §9 禁止的"只警告而继续运行"。空值不是"未提供"：显式空对必须与单侧非法同样
+    # fail-loud（exit 4），否则调用方以为结构化已生效、实际渲染 R4 的坏布局且只留一行
+    # Write-Warning。（R6-C 复审实测：显式空串对/空白对曾返回 exit 0 走 legacy。）
+    if ($DecisionProvided -and $ContextProvided -and -not ($hasDecision -and $hasContext)) {
+        throw ("approval card: DecisionSummary and ContextSummary were both bound but are blank/empty; " +
+            "explicit blank is invalid input, not 'not provided' " +
+            "(nonBlank decision=$hasDecision, nonBlank context=$hasContext); " +
+            "refusing to fall back to the legacy layout (R6 rule)")
+    }
+    if ($hasDecision -and $hasContext) {
         $t1 = Escape-Xml ($Title -replace '\r?\n', ' ')
         $t2 = Escape-Xml ($Decision -replace '\r?\n', ' ')
         $t3 = Escape-Xml $Context
@@ -338,8 +371,16 @@ $textBlock
 </toast>
 "@
     }
-    if ($Decision -cne '' -or $Context -cne '') {
-        Write-Warning 'dsh-approval-center: -DecisionSummary and -ContextSummary must be provided as a pair; falling back to legacy single-message path'
+    # 走到这里只可能是"两字段都未提供" → 显式 legacy 兼容路径。
+    # 旧实现在此还有一条 Write-Warning + 继续走 legacy 的分支；R6 §9 明令
+    # "只警告而继续运行不算按渠道不可用处理"，且该分支现已被上面的三条 fail-loud
+    # 全部覆盖（单侧、显式空对、两侧空白都在此之前 throw）。这里做防御性断言：
+    # 若还有任何一侧被绑定到非空值却落到 legacy，必须可见地失败而不是继续渲染。
+    if ($DecisionProvided -or $ContextProvided) {
+        throw ("approval card: legacy path reached with structural fields bound " +
+            "(DecisionProvided=$DecisionProvided, ContextProvided=$ContextProvided, " +
+            "nonBlankDecision=$hasDecision, nonBlankContext=$hasContext); " +
+            "this must have been rejected earlier (R6 rule)")
     }
 
     $titleLines = @(($Title -split "\r?\n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
@@ -425,7 +466,7 @@ $textBlock
 # ---------------------------------------------------------------------------
 if ($ValidateOnly) {
     try {
-        $xmlText = Build-ApprovalToastXml -Title $Title -Message $Message -Id 'validateonly0000' -Decision $DecisionSummary -Context $ContextSummary
+        $xmlText = Build-ApprovalToastXml -Title $Title -Message $Message -Id 'validateonly0000' -Decision $DecisionSummary -Context $ContextSummary -DecisionProvided:$decisionProvided -ContextProvided:$contextProvided
         $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
         $doc.LoadXml($xmlText)
         $nodes = $doc.GetElementsByTagName('text')
@@ -527,7 +568,7 @@ try {
 
     # 卡片 XML 由 Build-ApprovalToastXml 统一构造（多行布局与 ToastGeneric 预算见函数注释）。
     # 传入本次真实 requestToken，协议 URI 的形态与改动前逐字一致。
-    $xmlString = Build-ApprovalToastXml -Title $Title -Message $Message -Id $id -Decision $DecisionSummary -Context $ContextSummary
+    $xmlString = Build-ApprovalToastXml -Title $Title -Message $Message -Id $id -Decision $DecisionSummary -Context $ContextSummary -DecisionProvided:$decisionProvided -ContextProvided:$contextProvided
 
     $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
     $xml.LoadXml($xmlString)
