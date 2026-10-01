@@ -365,13 +365,31 @@ function Build-ApprovalToastXml([string]$Title, [string]$Message, [string]$Id,
     $hasDecision = $DecisionProvided -and ($Decision.Trim().Length -gt 0)
     $hasContext = $ContextProvided -and ($Context.Trim().Length -gt 0)
     if ($hasDecision -and $hasContext) {
-        $t1 = Escape-Xml ($Title -replace '\r?\n', ' ')
-        $t2 = Escape-Xml ($Decision -replace '\r?\n', ' ')
-        $t3 = Escape-Xml $Context
+        # ── R9 布局修复（最小改动）：复用脚本**已有**的"标题富余行"思路 ──────────
+        # R8 实机 FAIL 的机制（D §12.1 机械可核）：结构化路径把 decision 与 context
+        # 各放一个 <text>，描述行合计 = 1(decision) + 4(context 含摘要提示) = **5 > 4**，
+        # 排最末的"（摘要，详情见 DSH）"被 Windows 静默裁掉 —— 而那正是契约要求的
+        # "截断必须显式标记"。legacy 路径一直有预算吸收（把标题富余行拿去装正文），
+        # 结构化路径漏用了同一逻辑，不是 Windows 的锅。
+        #
+        # 修复：**decision 挪进标题第二行**（标题预算 2 行、实际只用 1 行），
+        # 描述区只剩 context 一个 <text>（≤4 行），摘要提示**永远在预算内**。
+        # 安全语义不变且更强：decision 仍排最前（紧邻标题）、逐字完整、不参与截断。
+        # context 仍由 Node 侧按字段独立限宽；脚本原样放一个 <text>。
+        #
+        # 行预算（逻辑行）：标题 = 1(title) + 1(decision) = 2/2；
+        # 描述 = context 行数（formatter 最多 4：任务/操作/原因/摘要提示）= ≤4/4。✅
+        # 铁律不变：不伪造命令/原因；协议、退出码、requestToken 均未改动。
+        $titleFirst = ($Title -replace '\r?\n', ' ')
+        $decisionClean = ($Decision -replace '\r?\n', ' ')
+        # 第一个 <text> = title + 换行 + decision（标题预算 2/2 恰好用满，
+        # 与 legacy 吸收先例一致：decision 紧随标题、先于一切动态摘要、逐字完整、
+        # 不参与任何截断预算）。第二个 <text> = context（≤4 行）⇒ 摘要提示永远在预算内。
+        $t1 = Escape-Xml ($titleFirst + "`n" + $decisionClean)
+        $t2 = Escape-Xml $Context
         $textBlock = (@(
             '      <text>' + $t1 + '</text>'
             '      <text>' + $t2 + '</text>'
-            '      <text>' + $t3 + '</text>'
         ) -join [Environment]::NewLine)
         return @"
 <toast scenario="reminder" activationType="protocol">

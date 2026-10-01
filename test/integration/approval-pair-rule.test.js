@@ -176,8 +176,15 @@ describe('R6-2 L-B 真实 PS 入口：顶层绑定参数判定（非法 → exit
     const r = psValidate({ decision: '拒绝不执行；30秒后自动拒绝', context: '任务：x' })
     assert.equal(r.status, 0, `合法成对应 exit 0，实测 ${r.status} / ${r.stdout.slice(0, 200)}`)
     assert.ok(r.stdout.includes('VALIDATE OK'), '应输出 VALIDATE OK')
+    // R9 布局：decision 并入标题 <text>（标题预算 2/2），context 单独一个 <text>（≤4 行）
+    // ⇒ 结构化路径恰 2 个 <text>（原 3 个 <text> 的布局在实机裁掉摘要提示，已废弃）。
     const textNodes = (r.stdout.match(/TEXT> /g) ?? []).length
-    assert.equal(textNodes, 3, `结构化路径应恰 3 个 <text>，实测 ${textNodes}`)
+    assert.equal(textNodes, 2, `R9 结构化路径应恰 2 个 <text>（title+decision 合并、context 独立），实测 ${textNodes}`)
+    // decision 必须出现在第一个 <text> 内（安全信息先于动态摘要）。
+    // 注：PS 5.1 重定向用控制台代码页（本机 936=GBK），中文在 utf8 解码下是乱码，
+    // 故不断言中文字面量，而是断言**结构**：第一个 <text> 含 2 行（title 行 + decision 行）。
+    const firstText = (r.stdout.match(/TEXT> ([^\r\n]*)/) ?? [])[1] ?? ''
+    assert.ok(firstText.includes(' | '), `第一个 <text> 应含 title+decision 两行（以 ' | ' 分隔）：${firstText}`)
   })
 
   test('B-1 两字段都未传 → legacy（exit 0，非 3 text）', () => {
