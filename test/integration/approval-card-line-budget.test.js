@@ -1,26 +1,8 @@
 /**
- * R8-D 阻塞项复现：**结构化审批卡超出脚本自身文档化的描述行预算**。
- *
- * 背景（R8 派发书 §17/§29/§37）：
- *   A 契约要求"原因被截断时显式标记"，派发书进一步要求该提示**可见**。
- *   实测（`F-R-1000-banner.png`，输入**逐字来自生产 formatter**）：提示不可见。
- *   本文件把"不可见"从截图解释升级为**机械可核的结构事实**。
- *
- * 事实链（全部作用于**解包候选**，不投递、不写 HKCU、不建状态目录）：
- *   1) `scripts/approval-toast.ps1` 自带文档化上限（L313-315）：
- *      标题 ≤ 2 行、两个描述 `<text>` **合计** ≤ 4 行（ToastGeneric 文档限制）。
- *   2) 结构化路径（成对 `-DecisionSummary`/`-ContextSummary`）只做三 `<text>` 拼装
- *      （L367-388）：`<text>title</text><text>decision</text><text>context</text>`，
- *      不套用任何预算检查 ⇒ 描述行 = 1 + context 行数。
- *   3) 生产 formatter 在原因被截断时输出 **4 行** context（任务/操作/原因/摘要提示）
- *      ⇒ 描述行 = **5 > 4**，摘要提示位于第 5 行。
- *   4) legacy 路径（只传 `-Message`）对**同一份内容**做预算吸收（L409-446）：
- *      把 decision 挪进标题的第二行，描述恰好 4 行，提示位于第 4 行 ⇒ 可见。
- *      ⇒ 修复方向已有脚本内先例；这是**结构化路径漏用预算逻辑**，不是 Windows 的锅。
- *
- * 预期：B-2/B-3 **当前必然失败**（即本缺陷的复现）；B-1/B-4 是基线/对照，应通过。
- * 一旦 A 让结构化路径复用同一预算逻辑（把 decision 行挪进标题元素或做保留首尾的截断），
- * 本文件应转绿——它就是该修复的验收测试。
+ * R8到R11的审批结构回归：固定安全信息优先，摘要提示独立attribution。
+ * R10横幅已通过，但更窄的通知中心会再次裁掉末行；R11把提示移出描述。
+ * 普通text与attribution分别计数，逻辑预算通过不能证明像素可见。
+ * B-4仅是旧legacy的结构对照，不宣称真实屏幕完整显示。
  *
  * 铁律：只跑 `-ValidateOnly`（不注册 URI、不写状态文件、不 Show、不弹通知）。
  */
@@ -63,8 +45,10 @@ function validateOnly(card, mode) {
     { windowsHide: true })
   const stdout = decodeConsole(r.stdout)
   const texts = []
+  const attributions = []
   for (const line of stdout.split(/\r?\n/)) {
     if (line.startsWith('TEXT> ')) texts.push(line.slice('TEXT> '.length).split(' | '))
+    if (line.startsWith('ATTRIBUTION> ')) attributions.push(line.slice('ATTRIBUTION> '.length))
   }
   const okMatch = /textNodes=(\d+) actionNodes=(\d+)/.exec(stdout)
   return {
@@ -72,6 +56,7 @@ function validateOnly(card, mode) {
     ok: okMatch !== null,
     textNodes: okMatch ? Number(okMatch[1]) : -1,
     texts,
+    attributions,
     titleLines: texts[0] ?? [],
     descLines: texts.slice(1).flat(),
     raw: stdout.trim(),
@@ -86,7 +71,36 @@ const cardFor = (reason, title = '修复登录问题') => formatApprovalCard({
 const LONG = cardFor('原因说明内容测试'.repeat(125))   // 1000 字 → formatter 截断并加提示
 const BOUNDARY = cardFor('因'.repeat(20)) // R10显示预算边界，不截断
 
-describe('R8-D 审批卡描述行预算（结构化 vs legacy）', () => {
+describe('审批卡结构预算与独立摘要提示（结构化 vs legacy）', () => {
+  test('B-6 M7回归：截断提示是独立attribution，不占动态描述预算', () => {
+    const r = validateOnly(LONG, 'structured')
+    assert.equal(r.status, 0)
+    assert.deepEqual(r.attributions, [SUMMARY_TRUNCATED_MARK])
+    assert.equal(r.texts.length, 2, '普通文本仍为安全标题与上下文')
+    assert.equal(r.descLines.length, 3, '描述只含任务/操作/原因')
+    assert.equal(r.descLines.some(l => l.includes(SUMMARY_TRUNCATED_MARK)), false)
+    assert.deepEqual(r.titleLines, [LONG.title, LONG.decisionSummary])
+    assert.equal(r.textNodes, 3, '两个普通文本加一个attribution')
+  })
+
+  test('B-7 未截断卡片不伪造attribution；类似文字不是提示行', () => {
+    const plain = validateOnly(BOUNDARY, 'structured')
+    assert.equal(plain.status, 0)
+    assert.deepEqual(plain.attributions, [])
+    const similar = validateOnly({ ...BOUNDARY, contextSummary: `任务：x\n操作：y\n原因：${SUMMARY_TRUNCATED_MARK}附加` }, 'structured')
+    assert.equal(similar.status, 0)
+    assert.deepEqual(similar.attributions, [])
+    assert.ok(similar.descLines[2].includes(`${SUMMARY_TRUNCATED_MARK}附加`))
+  })
+
+  test('B-8 CRLF和XML特殊字符不改变正文或独立提示', () => {
+    const lines = ['任务：<修复>&测试', '操作：bash', '原因：读取<&>目录']
+    const r = validateOnly({ ...LONG, contextSummary: [...lines, SUMMARY_TRUNCATED_MARK].join('\r\n') }, 'structured')
+    assert.equal(r.status, 0)
+    assert.deepEqual(r.descLines, lines)
+    assert.deepEqual(r.attributions, [SUMMARY_TRUNCATED_MARK])
+    assert.deepEqual(r.titleLines, [LONG.title, LONG.decisionSummary])
+  })
   test('B-0 前置：包内脚本与 formatter 均可加载，ValidateOnly 基线可用', () => {
     assert.ok(existsSync(APPROVAL_SCRIPT), `找不到 ${APPROVAL_SCRIPT}`)
     const r = validateOnly(BOUNDARY, 'legacy')
@@ -109,15 +123,13 @@ describe('R8-D 审批卡描述行预算（结构化 vs legacy）', () => {
       + '尾部（含摘要提示）会被 Windows 裁掉\n描述行：\n' + r.descLines.map((l, i) => `  ${i + 1}. ${l}`).join('\n'))
   })
 
-  test('B-3 生产结构化路径：摘要提示必须落在前 4 行描述内（用户可见）', () => {
+  test('B-3 生产结构化路径：摘要提示移出描述，保留为独立attribution', () => {
     const r = validateOnly(LONG, 'structured')
-    const idx = r.descLines.findIndex((l) => l.includes(SUMMARY_TRUNCATED_MARK))
-    assert.notEqual(idx, -1, '描述里必须带摘要提示')
-    assert.ok(idx < MAX_DESC_LINES,
-      `摘要提示位于描述第 ${idx + 1} 行，超出可见预算 ${MAX_DESC_LINES} 行 → 实机不可见`)
+    assert.deepEqual(r.attributions, [SUMMARY_TRUNCATED_MARK])
+    assert.equal(r.descLines.some(l => l.includes(SUMMARY_TRUNCATED_MARK)), false)
   })
 
-  test('B-4 对照（修复方向先例）：同一份内容走 legacy 路径在预算内且提示可见', () => {
+  test('B-4 legacy对照：摘要提示仍在逻辑预算内，像素可见性不外推', () => {
     const r = validateOnly(LONG, 'legacy')
     assert.equal(r.status, 0)
     assert.ok(r.descLines.length <= MAX_DESC_LINES,
@@ -128,7 +140,7 @@ describe('R8-D 审批卡描述行预算（结构化 vs legacy）', () => {
     assert.ok(r.titleLines.length <= MAX_TITLE_LINES, '标题行不得超预算')
   })
 
-  test('B-5 原因摘要含标签最多23码点，截断提示保留在描述预算内', () => {
+  test('B-5 原因摘要含标签最多23码点，formatter截断提示仍完整', () => {
     const r = validateOnly(BOUNDARY, 'structured')
     assert.equal(r.status, 0)
     assert.ok(r.descLines.length <= MAX_DESC_LINES,

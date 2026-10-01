@@ -53,10 +53,10 @@ param(
     # 文件、不调用 Show()、不弹任何通知**。用于无独占桌面时验证多行布局与转义。
     # 退出码：0=校验通过，4=校验失败。不属于审批退出码契约（0=批准 1=拒绝…）。
     [switch]$ValidateOnly,
-    # R5 §3 冻结的可选结构化字段。**成对提供**时走新版三 <text> 路径
-    # （title→decisionSummary→contextSummary，标题不吸收正文、decision 不参与截断）；
+    # 成对提供：title+decision为安全标题，context为动态描述；
+    # formatter的末尾摘要提示单独放attribution，不占正文折行空间。
     # 缺省（legacy 调用，如结果回执/手动脚本）走旧单 Message 平分路径。
-    # 只给其一 → 回退 legacy 并告警，绝不猜测哪段是安全信息。
+    # 单侧/显式空白等非法输入 → exit 4，禁止回退legacy或投递。
     [string]$DecisionSummary = '',
     [string]$ContextSummary = ''
 )
@@ -372,24 +372,34 @@ function Build-ApprovalToastXml([string]$Title, [string]$Message, [string]$Id,
         # "截断必须显式标记"。legacy 路径一直有预算吸收（把标题富余行拿去装正文），
         # 结构化路径漏用了同一逻辑，不是 Windows 的锅。
         #
-        # 修复：**decision 挪进标题第二行**（标题预算 2 行、实际只用 1 行），
-        # 描述区只剩 context 一个 <text>（≤4 行），摘要提示**永远在预算内**。
+        # R9：decision挪进标题第二行。R10实机又证明，更窄的通知中心
+        # 仍会因原因折行裁掉context尾部的摘要提示。
         # 安全语义不变且更强：decision 仍排最前（紧邻标题）、逐字完整、不参与截断。
-        # context 仍由 Node 侧按字段独立限宽；脚本原样放一个 <text>。
+        # R11：仅把formatter生成的末尾完整提示行移到官方attribution位置。
+        # 普通正文保留任务/操作/原因，legacy与安全信息不变；实际可见性待实机。
         #
         # 行预算（逻辑行）：标题 = 1(title) + 1(decision) = 2/2；
-        # 描述 = context 行数（formatter 最多 4：任务/操作/原因/摘要提示）= ≤4/4。✅
+        # 描述 = 任务/操作/原因；attribution独立，不计作描述逻辑行。
         # 铁律不变：不伪造命令/原因；协议、退出码、requestToken 均未改动。
         $titleFirst = ($Title -replace '\r?\n', ' ')
         $decisionClean = ($Decision -replace '\r?\n', ' ')
         # 第一个 <text> = title + 换行 + decision（标题预算 2/2 恰好用满，
         # 与 legacy 吸收先例一致：decision 紧随标题、先于一切动态摘要、逐字完整、
-        # 不参与任何截断预算）。第二个 <text> = context（≤4 行）⇒ 摘要提示永远在预算内。
+        # 不参与任何截断预算）。第二个普通<text>是动态context。
         $t1 = Escape-Xml ($titleFirst + "`n" + $decisionClean)
-        $t2 = Escape-Xml $Context
+        $contextLines = @($Context -split '\r?\n')
+        $summaryMark = '（摘要，详情见 DSH）'
+        $attributionLine = ''
+        # 只识别完整末行，不搜索/裁切用户原因中的类似文字。
+        if ($contextLines.Count -gt 1 -and $contextLines[-1] -ceq $summaryMark) {
+            $attributionLine = '      <text placement="attribution">' + (Escape-Xml $summaryMark) + '</text>'
+            $contextLines = @($contextLines[0..($contextLines.Count - 2)])
+        }
+        $t2 = Escape-Xml ($contextLines -join "`n")
         $textBlock = (@(
             '      <text>' + $t1 + '</text>'
             '      <text>' + $t2 + '</text>'
+            if ($attributionLine -ne '') { $attributionLine }
         ) -join [Environment]::NewLine)
         return @"
 <toast scenario="reminder" activationType="protocol">
@@ -512,7 +522,11 @@ if ($ValidateOnly) {
         $nodes = $doc.GetElementsByTagName('text')
         $actions = $doc.GetElementsByTagName('action')
         Write-Output ("VALIDATE OK: textNodes={0} actionNodes={1}" -f @($nodes).Count, @($actions).Count)
-        foreach ($n in $nodes) { Write-Output ('TEXT> ' + ($n.InnerText -replace "`n", ' | ')) }
+        foreach ($n in $nodes) {
+            $prefix = 'TEXT> '
+            if ($n.GetAttribute('placement') -ceq 'attribution') { $prefix = 'ATTRIBUTION> ' }
+            Write-Output ($prefix + ($n.InnerText -replace "`n", ' | '))
+        }
         exit 0
     } catch {
         Write-Output ('VALIDATE FAILED: ' + (Format-Exception $_))

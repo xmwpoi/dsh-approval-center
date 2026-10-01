@@ -388,12 +388,13 @@ SubagentStopReason = 'completed' | 'aborted' | 'error' | 'max-tokens' | 'refusal
 | `<text>` 节点 | 内容 | 行预算 |
 |---|---|---|
 | **#1（标题元素）** | `title` + `\n` + `decisionSummary` | **2/2** 恰好用满 |
-| **#2（描述元素）** | `contextSummary`（任务/操作/原因/摘要提示） | **≤4/4** |
+| **#2（描述元素）** | `contextSummary`中的任务/操作/原因 | 3个逻辑行，实际折行须实机核验 |
+| **#3（仅截断时）** | formatter的末尾完整`（摘要，详情见 DSH）`行，`placement="attribution"` | 独立提示位置，不作普通描述行 |
 
-- 摘要提示（context 第 4 行）在逻辑描述预算内；R9实机证明原因折行仍会挤掉提示，不能据此推导用户可见。R10缩减原因摘要预算，新包像素可见性仍须实机验收。
+- R10实机证明20码点原因摘要在横幅提示可见，但更窄的通知中心仍会挤掉末行。R11仅将formatter生成的完整末行提示移至独立attribution位置；不匹配或切除原因中的类似文字。官方schema：https://learn.microsoft.com/en-us/uwp/schemas/tiles/toastschema/element-text 。新包横幅及展开态实际可见性仍须C实机验收，不能据XML结构签PASS。
 - 安全语义不变：decision 仍排**最前**（title 之后、一切动态摘要之前）、逐字完整、
   不参与任何截断预算；context 由 Node 侧按字段独立限宽（20/20/20 码点，均含省略号）。
-- 结构化路径恰 **2 个 `<text>`**（原 3 个的布局已废弃）。
+- 结构化路径为 **2个普通`<text>`，仅截断时加1个attribution `<text>`**；不恢复旧title/decision/context三普通元素布局。
 - **逻辑行在预算内 ≠ 渲染行在预算内**（折行余量风险如实记录，见 D 测试 B-5 注）；
   最终可见性由 C 的实机验收证明，本契约不预签。
 
