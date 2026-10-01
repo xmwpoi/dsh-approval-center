@@ -454,3 +454,58 @@ test('NF-45: XML 特殊字符原样保留，交由脚本转义（不预先转义
   assert.ok(c.contextSummary.includes('原因：x&y<z>w'))
   assert.equal(c.message.includes('&amp;'), false, '预转义会导致脚本二次转义')
 })
+
+// ── R5 接续（A/B 联合复核）：结构化接线支持 ─────────────────────────────────
+
+test('NF-46: decisionSummary 与 contextSummary 永远非空（C 结构化路径的配对前提）', async () => {
+  // C 的 Build-ApprovalToastXml 以两个字段**都非空**作为走结构化 3-<text> 布局的判据；
+  // 任一为空都会静默落回 legacy，把安全信息重新挤回正文折行区。
+  // 因此 B 保证：任何合法输入下两字段都不为空。
+  const { SUMMARY_TRUNCATED_MARK: _mark } = await import('../lib/notifications.js')
+  const inputs = [
+    {},
+    { toolName: '' },
+    { toolName: '   ' },
+    { title: '', sessionId: '' },
+    { toolName: 'x'.repeat(10_000), title: '', reason: '' },
+    { toolName: '\u0000\u0007', title: '\u0000', reason: '\u0000' },
+    { timeoutSec: -1 },
+    { timeoutSec: NaN },
+  ]
+  for (const overrides of inputs) {
+    const c = card(overrides)
+    assert.notEqual(c.title, '', `input=${JSON.stringify(overrides)}：title 不得为空`)
+    assert.notEqual(c.decisionSummary, '', `input=${JSON.stringify(overrides)}：decisionSummary 不得为空`)
+    assert.notEqual(c.contextSummary, '', `input=${JSON.stringify(overrides)}：contextSummary 不得为空`)
+    assert.ok(c.message.startsWith(c.decisionSummary), `input=${JSON.stringify(overrides)}：安全信息必须仍是首行`)
+  }
+})
+
+test('NF-47: 摘要预算可调——断言全部相对 TEXT_LIMITS，C 实机要求收紧时改常量即可', async () => {
+  const { TEXT_LIMITS: limits } = await import('../lib/notifications.js')
+  // 预算调小：超长内容仍被限宽，安全信息不受影响
+  const r1 = formatApprovalCard({ toolName: 'x'.repeat(500), title: 't'.repeat(500), reason: 'r'.repeat(500), timeoutSec: 60, timeoutAction: 'reject' })
+  assert.equal(r1.decisionSummary, '拒绝不执行；60秒后自动拒绝')
+  const opLine = r1.contextSummary.split('\n').find((l) => l.startsWith('操作：'))
+  assert.ok(Array.from(opLine).length <= limits.approvalToolName + 3)
+  // 预算放大（模拟 C 实机反馈"可再放一点"）：断言依然按常量相对成立
+  assert.ok(Array.from(taskDisplayName(SID, 't'.repeat(500), true)).length <= TEXT_LIMITS.taskTitle)
+  // 32 中文原因在当前 36 预算内不截断；若预算收紧到 <32，NF-40 的相对断言仍成立
+  const c32 = card({ reason: '原'.repeat(32) })
+  const line32 = c32.contextSummary.split('\n').find((l) => l.startsWith('原因：'))
+  assert.ok(Array.from(line32).length <= TEXT_LIMITS.approvalReason + 3)
+})
+
+test('NF-48: contextSummary 的多行性对 C 的 XML 是安全的（每行带标签，无空行）', () => {
+  for (const overrides of [{}, { toolName: 'x'.repeat(500), reason: 'r'.repeat(500) }]) {
+    const c = card(overrides)
+    const lines = c.contextSummary.split('\n')
+    assert.ok(lines.length >= 3 && lines.length <= 4, `摘要行数 3-4，实得 ${lines.length}`)
+    assert.ok(lines[0].startsWith('任务：'))
+    assert.ok(lines[1].startsWith('操作：'))
+    assert.ok(lines[2].startsWith('原因：'))
+    if (lines.length === 4) assert.equal(lines[3], SUMMARY_TRUNCATED_MARK)
+    // 无空行：空 <text> 或空行都会被 C 的脚本丢弃/产生空节点
+    assert.ok(lines.every((l) => l.trim() !== ''), '不得有空行')
+  }
+})
