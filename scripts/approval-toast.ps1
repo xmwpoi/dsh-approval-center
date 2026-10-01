@@ -499,6 +499,12 @@ $textBlock
 # 正确、LoadXml 是否接受）。退出码 0=通过 / 4=失败，不属于审批退出码契约。
 # ---------------------------------------------------------------------------
 if ($ValidateOnly) {
+    # R9：-ValidateOnly 的 TEXT> 诊断必须以 UTF-8 输出，不受控制台代码页影响。
+    # 否则 CI（windows-latest 控制台 CP 为 437/GBK 不定）与本机（936）对 CJK 的
+    # 解码不一致，测试里的中文字面量断言（如"（摘要，详情见 DSH）"）会随环境漂移
+    # —— R9 首轮 CI 正是因此 FAIL（本机绿、CI 红）。生产路径不受影响：生产不打印
+    # TEXT> 诊断，且该设置只改本进程 stdout 编码，退出即消失。
+    try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
     try {
         $xmlText = Build-ApprovalToastXml -Title $Title -Message $Message -Id 'validateonly0000' -Decision $DecisionSummary -Context $ContextSummary -DecisionProvided:$decisionProvided -ContextProvided:$contextProvided
         $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
