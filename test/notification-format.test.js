@@ -388,7 +388,7 @@ test('NF-40: 32/100 个中文字符的原因——安全信息与审批对象都
     // 原因自身受限宽
     const reasonLine = c.contextSummary.split('\n').find((l) => l.startsWith('原因：'))
     assert.ok(Array.from(reasonLine).length <= TEXT_LIMITS.approvalReason + 3, `len=${len}`)
-    // 仅在确实超预算时才出现摘要提示（32 码点在 36 预算内，不应谎报截断）
+    // 仅在确实超当前显示预算时出现摘要提示，不谎报截断。
     if (len > TEXT_LIMITS.approvalReason) {
       assert.ok(c.contextSummary.includes(SUMMARY_TRUNCATED_MARK), `len=${len}`)
       assert.equal(c.contextSummary.split('\n').pop(), SUMMARY_TRUNCATED_MARK)
@@ -490,7 +490,7 @@ test('NF-47: 摘要预算可调——断言全部相对 TEXT_LIMITS，C 实机�
   assert.ok(Array.from(opLine).length <= limits.approvalToolName + 3)
   // 预算放大（模拟 C 实机反馈"可再放一点"）：断言依然按常量相对成立
   assert.ok(Array.from(taskDisplayName(SID, 't'.repeat(500), true)).length <= TEXT_LIMITS.taskTitle)
-  // 32 中文原因在当前 36 预算内不截断；若预算收紧到 <32，NF-40 的相对断言仍成立
+  // 对预算使用相对断言，32中文原因收紧后须保留摘要提示。
   const c32 = card({ reason: '原'.repeat(32) })
   const line32 = c32.contextSummary.split('\n').find((l) => l.startsWith('原因：'))
   assert.ok(Array.from(line32).length <= TEXT_LIMITS.approvalReason + 3)
@@ -507,5 +507,17 @@ test('NF-48: contextSummary 的多行性对 C 的 XML 是安全的（每行带�
     if (lines.length === 4) assert.equal(lines[3], SUMMARY_TRUNCATED_MARK)
     // 无空行：空 <text> 或空行都会被 C 的脚本丢弃/产生空节点
     assert.ok(lines.every((l) => l.trim() !== ''), '不得有空行')
+  }
+})
+test('NF-49: R9 长原因回归：原因行含标签和省略号不超过23码点，摘要提示保留', () => {
+  for (const len of [20, 21, 32, 36, 37, 100, 1000]) {
+    const card = formatApprovalCard({
+      toolName: 'bash', title: '修复登录问题', sessionId: 'r10-reason-budget',
+      reason: '因'.repeat(len), timeoutSec: 60, timeoutAction: 'reject', showTitle: true,
+    })
+    const line = card.contextSummary.split('\n').find(l => l.startsWith('原因：'))
+    assert.ok(Array.from(line).length <= 23, `reason=${len}, line=${Array.from(line).length}`)
+    assert.equal(card.contextSummary.includes(SUMMARY_TRUNCATED_MARK), len > 20)
+    assert.equal(card.decisionSummary, '拒绝不执行；60秒后自动拒绝')
   }
 })

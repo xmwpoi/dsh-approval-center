@@ -84,7 +84,7 @@ const cardFor = (reason, title = '修复登录问题') => formatApprovalCard({
 })
 
 const LONG = cardFor('原因说明内容测试'.repeat(125))   // 1000 字 → formatter 截断并加提示
-const BOUNDARY = cardFor('需要执行沙箱外操作'.repeat(4)) // 36 字 = 上限，不截断
+const BOUNDARY = cardFor('因'.repeat(20)) // R10显示预算边界，不截断
 
 describe('R8-D 审批卡描述行预算（结构化 vs legacy）', () => {
   test('B-0 前置：包内脚本与 formatter 均可加载，ValidateOnly 基线可用', () => {
@@ -128,16 +128,18 @@ describe('R8-D 审批卡描述行预算（结构化 vs legacy）', () => {
     assert.ok(r.titleLines.length <= MAX_TITLE_LINES, '标题行不得超预算')
   })
 
-  test('B-5 边界：36 字（未截断）原因的结构化路径在逻辑行预算内（记录折行余量风险）', () => {
+  test('B-5 原因摘要含标签最多23码点，截断提示保留在描述预算内', () => {
     const r = validateOnly(BOUNDARY, 'structured')
     assert.equal(r.status, 0)
     assert.ok(r.descLines.length <= MAX_DESC_LINES,
-      `36 字原因时描述 ${r.descLines.length} 行（应 ≤ 4）`)
-    // 注意：逻辑行在预算内 ≠ 渲染行在预算内。原因行含前缀共 39 码点，实机横幅一行约放
-    // 22-24 个中文字符（见 M4-reason32-crop.png），折行产生的第 2 渲染行会挤掉预算外的行。
-    // 因此修复必须留出余量（B-4 的 legacy 布局正好余 1 行），不能只把逻辑行压到 4。
+      `20 字原因时描述 ${r.descLines.length} 行（应 ≤ 4）`)
+    // R9实机证明逻辑行绿不足以保证提示可见。这里只验证保守显示预算，
+    // 不能把码点约束当作像素证明；新包仍须C在目标环境实机复验。
     const reasonLine = r.descLines.find((l) => l.startsWith('原因：')) ?? ''
-    assert.ok(Array.from(reasonLine).length >= 36,
-      '原因行应保留 formatter 的 36 码点上限内容（供渲染折行余量核对）')
+    assert.equal(reasonLine, `原因：${'因'.repeat(20)}`)
+    const longReasonLine = LONG.contextSummary.split('\n').find(l => l.startsWith('原因：'))
+    assert.ok(Array.from(longReasonLine).length <= 23, '长原因含标签及省略号最多23码点')
+    assert.ok(longReasonLine.endsWith('…'), '超预算原因必须带省略号')
+    assert.ok(LONG.contextSummary.includes(SUMMARY_TRUNCATED_MARK), '截断必须保留详情提示')
   })
 })

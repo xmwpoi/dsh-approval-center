@@ -59,7 +59,7 @@ export declare const TEXT_LIMITS: {
      * 审批摘要内"原因"预算。原因排在摘要**最后**：空间不足时先牺牲原因，
      * 绝不牺牲任务/操作（否则用户不知道自己在批什么）。
      */
-    readonly approvalReason: 36;
+    readonly approvalReason: 20;
 };
 /** 截断标记（正文被截断时追加）。 */
 export declare const ELLIPSIS = "\u2026";
