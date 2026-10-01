@@ -24,7 +24,8 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { after, describe, test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -77,6 +78,46 @@ function psValidate({ decision, context, title = 'T', message = 'M' }) {
   if (context !== undefined) argv.push('-ContextSummary', context)
   const r = spawnSync('powershell.exe', argv, { encoding: 'utf8', windowsHide: true })
   return { status: r.status, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') }
+}
+
+/**
+ * L-B'：**生产路径**（不加 -ValidateOnly）真实执行 PS 脚本。
+ *
+ * 为什么必须有这一层（R7 §11/§17 的教训）：
+ *   `-ValidateOnly` 在脚本 483 行就 exit，**根本走不到**生产前置校验（512 行）与
+ *   New-Item/Register-UriScheme/Ensure-AppId（511/517/519）。因此只用 ValidateOnly
+ *   的用例无法发现"生产前置抛异常 → 未捕获 → exit 1"这类缺陷：
+ *   exit 1 在本插件契约里是"用户点了拒绝"（dialog.ts mapExitCode: case 1 → rejected），
+ *   会把调用方传错参数谎报成人类决策。
+ *
+ * 零副作用证据：
+ *   1) 传一个**不存在的私有 -StateDir**，断言它未被创建（证明 New-Item 未执行）
+ *   2) 运行前后读取 HKCU dshapproval 注册值，断言逐字未变（证明未注册 URI）
+ *   3) 给短 TimeoutSec；非法输入应在任何等待之前就退出
+ */
+function psProduction({ decision, context, title = 'T', message = 'M', timeoutSec = 3 }) {
+  const stateDir = join(mkdtempSync(join(tmpdir(), 'r7-prod-')), 'ghost-state')
+  rmSync(stateDir, { recursive: true, force: true })
+  const regValue = () => {
+    const r = spawnSync('reg', ['query', 'HKCU\\Software\\Classes\\dshapproval\\shell\\open\\command', '/ve'],
+      { encoding: 'utf8', windowsHide: true })
+    return String(r.stdout ?? '').trim()
+  }
+  const before = regValue()
+  const argv = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+    '-File', APPROVAL_SCRIPT, '-Title', title, '-Message', message,
+    '-TimeoutSec', String(timeoutSec), '-RequestToken', 'a'.repeat(32), '-StateDir', stateDir]
+  if (decision !== undefined) argv.push('-DecisionSummary', decision)
+  if (context !== undefined) argv.push('-ContextSummary', context)
+  const r = spawnSync('powershell.exe', argv, { encoding: 'utf8', windowsHide: true, timeout: 60_000 })
+  const after = regValue()
+  const stateCreated = existsSync(stateDir)
+  rmSync(stateDir, { recursive: true, force: true })
+  return {
+    status: r.status,
+    stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? ''),
+    stateCreated, regUnchanged: before === after,
+  }
 }
 
 describe('R6-1 L-A Node 公共入口：成对/类型/空白预检（非法 → unavailable，零 spawn）', () => {
@@ -176,6 +217,41 @@ describe('R6-2 L-B 真实 PS 入口：顶层绑定参数判定（非法 → exit
     assert.equal(r.status, 4)
     assert.ok(!/SUBMITTED|Show\(\)/i.test(r.stdout), 'exit 4 前不得出现投递迹象')
   })
+})
+
+/**
+ * R7-2 L-B' **生产路径**前置时序（R7 §11/§17）。
+ *
+ * 为什么单列一层：`-ValidateOnly` 在脚本 483 行 exit，**走不到**生产前置（512 行）
+ * 与 New-Item/Register-UriScheme/Ensure-AppId（511/517/519）。仅用 ValidateOnly
+ * 的用例无法发现"生产前置 throw 未被捕获 → PowerShell 默认 exit 1"这一缺陷 ——
+ * 而 exit 1 在本插件契约里是 `rejected`（"用户点了拒绝"），会把调用方传错参数
+ * 谎报成人类决策并写入审计。R7-C 实测曾复现该 exit 1。
+ *
+ * 因此本层断言两件事：
+ *   1) 退出码是 **4**（渠道不可用），不是 1（rejected）；
+ *   2) 零副作用：私有 StateDir 未被创建 + HKCU dshapproval 注册值逐字未变。
+ */
+describe('R7-2 L-B\' 生产路径（非 ValidateOnly）：非法 → exit 4 且零副作用', () => {
+  const CASES = [
+    ['Bp-1 只提供 decision', { decision: '拒绝不执行；60秒后自动拒绝' }],
+    ['Bp-2 只提供 context', { context: '任务：x' }],
+    ['Bp-3 显式空串对', { decision: '', context: '' }],
+    ['Bp-4 显式空白对', { decision: '   ', context: '\t' }],
+  ]
+
+  for (const [label, args] of CASES) {
+    test(`${label} → exit 4（非 rejected=1）+ 零注册 + 零状态文件`, () => {
+      const r = psProduction(args)
+      assert.equal(r.status, 4,
+        `${label}: 生产路径必须 exit 4（渠道不可用）。实测 status=${r.status}；` +
+        `exit 1 会被 mapExitCode 解释为 'rejected'（谎报用户拒绝）。` +
+        `stdout=${r.stdout.slice(0, 200)} stderr=${r.stderr.slice(0, 200)}`)
+      assert.notEqual(r.status, 1, `${label}: 绝不能是 exit 1（那是"用户点了拒绝"的语义）`)
+      assert.equal(r.stateCreated, false, `${label}: 非法输入不得创建 StateDir（New-Item 不得执行）`)
+      assert.equal(r.regUnchanged, true, `${label}: 非法输入不得改 HKCU URI 注册（Register-UriScheme 不得执行）`)
+    })
+  }
 })
 
 describe('R6-3 L-C 真实插件审批流：spawn 参数与 formatter 输出逐字相等', () => {

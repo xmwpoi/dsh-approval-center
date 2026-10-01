@@ -499,10 +499,22 @@ if ($ValidateOnly) {
 # ── R7 §17：生产路径的**前置纯校验**（零副作用）────────────────────────────
 # 必须在 New-Item(StateDir) / Register-UriScheme / Ensure-AppId / 状态文件 /
 # 陈旧通知扫描之前执行：ValidateOnly 提前校验不代表生产提前校验，
-# 非法输入不得改 HKCU / 清旧状态。失败 → 顶层 catch → exit 4，零注册/文件/通知副作用。
+# 非法输入不得改 HKCU / 清旧状态。零注册/文件/通知副作用。
 # 构造器内保留同一防御（纵深防御）；CleanupToken/ClearAll 等维护入口不受本门影响。
-$pairMode = Test-ApprovalPairRule -DecisionProvided $decisionProvided -ContextProvided $contextProvided `
-                                  -Decision $DecisionSummary -Context $ContextSummary
+#
+# ⚠ 退出码必须是 **4（渠道不可用）**，不能是 PowerShell 未捕获异常的默认 1。
+#   本脚本契约里 exit 1 = "用户点了拒绝"（src/dialog.ts mapExitCode: case 1 ->
+#   'rejected'）。此处 throw 不在任何 try 内（生产 try 从 510 行才开始），
+#   在 $ErrorActionPreference='Stop' 下会以 exit 1 终止 —— 那会把"调用方传了非法
+#   参数"谎报成"人类拒绝了这次提权"，并写入审计为 rejected。
+#   因此这里显式捕获并 exit 4，与 -ValidateOnly 路径（exit 4）保持一致。
+try {
+    $pairMode = Test-ApprovalPairRule -DecisionProvided $decisionProvided -ContextProvided $contextProvided `
+                                      -Decision $DecisionSummary -Context $ContextSummary
+} catch {
+    Write-Output ('CARD INVALID: ' + (Format-Exception $_))
+    exit 4
+}
 
 $resultFile = $null
 $pendingFile = $null
