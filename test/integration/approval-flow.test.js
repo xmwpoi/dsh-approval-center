@@ -147,7 +147,9 @@ describe('displayReason 展示与审计分离（V13）', () => {
     const hostPlain = await startHostTracked()
     const plain = await runApproval(hostPlain, { toolName: 'pwsh', reason: '手工原因' }, 0)
     await hostPlain.unload()
-    assert.ok(toastArgsOf(plain.record).message.includes('原因: 手工原因'))
+    // 卡片结构化（契约 §3.4）：原因行使用全角冒号 `原因：`。
+    // （0.3.1-rc.1 旧文案是半角 `原因: `；本轮按契约改为结构化多行卡片。）
+    assert.ok(toastArgsOf(plain.record).message.includes('原因：手工原因'))
   })
 })
 
@@ -186,21 +188,24 @@ describe('超时与退出码映射（V02/V03/V04/V05）', () => {
   })
 })
 
-describe('子代理结束文案（V16 自动层）', () => {
-  test('stopReason 区分文案：error 不报"已完成"，completed 报"已完成"', async (t) => {
-    const host = await startHostTracked({ config: { notifyOnSubagentEnd: true } })
+/**
+ * 子代理通知已按本轮需求整体关闭（契约 §0/§3.1）。
+ *
+ * 本用例是 0.3.1-rc.1 旧行为的**刻意取代**（不是回归）：旧版在 `notifyOnSubagentEnd: true`
+ * 时会发 2 条子代理通知；新版要求**任何**子代理事件零通知、零发送进程，即使旧开关为 true。
+ * 依据：docs/design/task-notification-contract.md §0 修订约束 + §3.1 触发矩阵。
+ */
+describe('子代理通知（V16 反转：一律零通知）', () => {
+  test('subagent/end 所有终态 + 旧开关 true：零 spawn、零通知、零审计', async (t) => {
+    // 显式把已弃用的开关设为 true：必须仍然无效（不能只改默认值）。
+    const host = await startHostTracked({ config: { notifyOnSubagentEnd: true, notifyOnSubagentStart: true } })
     const before = spawned().length
-    host.ctx.emit('subagent/end', { runId: 'r1', provider: 'p', id: 'c1', stopReason: 'error' })
-    host.ctx.emit('subagent/end', { runId: 'r2', provider: 'p', id: 'c2', stopReason: 'completed' })
-    assert.equal(deltaSpawns(before).length, 2, '两条通知均已投递')
+    for (const stopReason of ['completed', 'aborted', 'error', 'max-tokens', 'refusal']) {
+      host.ctx.emit('subagent/end', { runId: 'r', provider: 'p', id: 'c1', stopReason })
+    }
+    host.ctx.emit('subagent/start', { runId: 'r', provider: 'p', id: 'c1' })
+    assert.equal(deltaSpawns(before).length, 0, '子代理事件不得产生任何 PowerShell 进程')
+    assert.equal(readAuditRows(host.dataDir).length, 0, '子代理通知不写审计')
     await host.unload()
-
-    const toasts = deltaSpawns(before).map(toastArgsOf)
-    const errToast = toasts.find((a) => a.message.includes('c1'))
-    const okToast = toasts.find((a) => a.message.includes('c2'))
-    assert.ok(errToast, 'error 结束应有通知')
-    assert.ok(errToast.title.includes('运行出错'), `error 文案：${errToast.title}`)
-    assert.ok(!errToast.title.includes('已完成'), '不得把 error 谎报为已完成')
-    assert.ok(okToast.title.includes('已完成'), `completed 文案：${okToast.title}`)
   })
 })

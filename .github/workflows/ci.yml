@@ -31,7 +31,7 @@ jobs:
       #   .ps1 含非 ASCII 时必须带 UTF-8 BOM（否则 PS 5.1 按 ANSI 解码 → 语法错误 →
       #   exit 1 → 被误报成"用户拒绝"）；.vbs 必须纯 ASCII。
       # 一个编辑器的一次"另存为"就能破坏它，所以在 CI 里守住。
-      - name: assert script encodings and PowerShell syntax
+      - name: assert script encodings, CRLF line endings and PowerShell syntax
         shell: pwsh
         run: |
           $fail = 0
@@ -39,7 +39,27 @@ jobs:
             $b = [System.IO.File]::ReadAllBytes($f.FullName)
             $bom = $b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF
             $nonAscii = 0; foreach ($x in $b) { if ($x -ge 0x80) { $nonAscii++ } }
-            Write-Host ("{0,-28} bom={1,-5} nonAscii={2}" -f $f.Name, $bom, $nonAscii)
+            # R2 §6 打包门：npm pack 打包的是**工作树文件**而不是 git blob，
+            # 所以 .gitattributes 的 eol=crlf 不能保证入包换行，必须在这里按字节核验。
+            # .ps1/.vbs 的最终交付换行必须是 CRLF（与既有脚本一致，避免混入裸 LF）。
+            $crlf = 0; $bareLf = 0
+            for ($i = 0; $i -lt $b.Length; $i++) {
+              if ($b[$i] -eq 0x0A) { if ($i -gt 0 -and $b[$i-1] -eq 0x0D) { $crlf++ } else { $bareLf++ } }
+            }
+            Write-Host ("{0,-28} bom={1,-5} nonAscii={2,-5} crlf={3,-5} bareLf={4}" -f $f.Name, $bom, $nonAscii, $crlf, $bareLf)
+            if ($bareLf -gt 0) { Write-Host "::error file=scripts/$($f.Name)::contains $bareLf bare LF; scripts must ship CRLF"; $fail++ }
+            if ($crlf -eq 0) { Write-Host "::error file=scripts/$($f.Name)::no CRLF found; scripts must ship CRLF"; $fail++ }
+            # R2 §6 完整性门：拒绝"只有 BOM/空白"的脚本（R1 实测事故：3 字节 BOM-only
+            # 能通过 非空+BOM+语法 三项检查却什么都不做，sender 会以 exit 0 静默假成功）。
+            $start = 0
+            if ($bom) { $start = 3 }
+            elseif ($b.Length -ge 2 -and (($b[0] -eq 0xFF -and $b[1] -eq 0xFE) -or ($b[0] -eq 0xFE -and $b[1] -eq 0xFF))) { $start = 2 }
+            $hasContent = $false
+            for ($i = $start; $i -lt $b.Length; $i++) {
+              $x = $b[$i]
+              if ($x -ne 0x20 -and $x -ne 0x09 -and $x -ne 0x0D -and $x -ne 0x0A -and $x -ne 0x0B -and $x -ne 0x0C) { $hasContent = $true; break }
+            }
+            if (-not $hasContent) { Write-Host "::error file=scripts/$($f.Name)::BOM/whitespace-only script (would silently no-op)"; $fail++ }
             if ($f.Extension -eq '.ps1') {
               if ($nonAscii -gt 0 -and -not $bom) { Write-Host "::error file=scripts/$($f.Name)::contains non-ASCII but no UTF-8 BOM"; $fail++ }
               $e = $null
@@ -50,8 +70,8 @@ jobs:
               if ($nonAscii -gt 0) { Write-Host "::error file=scripts/$($f.Name)::.vbs must stay pure ASCII"; $fail++ }
             }
           }
-          if ($fail -gt 0) { throw "$fail script encoding/syntax gate(s) failed" }
-          Write-Host 'script encoding gates passed'
+          if ($fail -gt 0) { throw "$fail script packaging gate(s) failed" }
+          Write-Host 'script packaging gates passed'
 
   integration:
     runs-on: windows-latest

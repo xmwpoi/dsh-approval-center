@@ -48,10 +48,28 @@ param(
     # 维护入口：按 token 定向清理一次审批的残留（通知按 tag 3 参 Remove、
     # .pending/.result/.dir 状态文件按映射反查）。幂等可重复；绝不 History.Clear。
     # 与 -ClearAllNotifications 的区别：那条是"按应用全清"（会伤及存活审批），这条只动自己。
-    [string]$CleanupToken = ''
+    [string]$CleanupToken = '',
+    # 维护入口（C 布局补丁）：只构造并 LoadXml 校验卡片 XML，**不注册 URI、不写状态
+    # 文件、不调用 Show()、不弹任何通知**。用于无独占桌面时验证多行布局与转义。
+    # 退出码：0=校验通过，4=校验失败。不属于审批退出码契约（0=批准 1=拒绝…）。
+    [switch]$ValidateOnly,
+    # 成对提供：title+decision为安全标题，context为动态描述；
+    # formatter的末尾摘要提示单独放attribution，不占正文折行空间。
+    # 缺省（legacy 调用，如结果回执/手动脚本）走旧单 Message 平分路径。
+    # 单侧/显式空白等非法输入 → exit 4，禁止回退legacy或投递。
+    [string]$DecisionSummary = '',
+    [string]$ContextSummary = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ── R6 §1：顶层实际绑定判定 ──────────────────────────────────────────────
+# 必须在**顶层**做（函数里默认值 `''` 总在，无法区分"显式空串"与"未提供"）。
+# 判定结果以 -DecisionProvided/-ContextProvided 传给 XML 构造器；
+# 结构化/legacy 的最终裁决与 fail-loud 都在构造器内统一执行（ValidateOnly 与真实路径共用）。
+$decisionProvided = $PSBoundParameters.ContainsKey('DecisionSummary')
+$contextProvided = $PSBoundParameters.ContainsKey('ContextSummary')
+
 $scheme = 'dshapproval'
 $appId = 'Dev.DSH.ApprovalCenter'
 # 操作中心分组名。本脚本只清扫自己这个组，绝不碰别的组：
@@ -270,6 +288,272 @@ function Escape-Xml([string]$s) {
     return $s.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;')
 }
 
+# ---------------------------------------------------------------------------
+# 审批卡片布局（C 布局补丁，纯函数，无副作用）
+#
+# 为什么要多行拆分：
+#   旧实现把多行正文塞进单个 <text> 并用 `n 分隔 —— Windows 不把 `n 当换行渲染，
+#   整段被折成一行连续文字，"任务/操作/原因/选择/等待"糊成一片
+#   （node-notifier#123 记录同一现象）。
+#
+# ToastGeneric 的**文档化**限制（App notification content / AdaptiveText，Win11）：
+#   * 最多 3 个 <text> 元素：1 个标题 + 2 个描述元素；
+#   * 标题最多 2 行，两个描述元素**合计**最多 4 行；
+#   * 超出 maxLines 的内容会被省略号截断。
+#   因此不能靠"无限堆 <text>"来排 5 行正文 —— 第 4 个 <text> 起就是未定义行为。
+#
+# A 现行卡片 = 标题 1 行 + 正文 5 行（任务/操作/原因/选择/等待）= 共 6 行。
+# 描述预算只有 4 行，直接平分会把最后一行（"等待：…超时自动批准"）截掉 —— 绝不允许。
+# 解法：标题预算是 2 行而标题只占 1 行，把**多出的那 1 行正文**挪进标题，
+#       正文剩下 4 行正好填满描述预算，6 行全部可见、零截断。
+#
+# 截断规则（正文行数仍超预算时）：保留**首部**若干行（上下文）+ 显式截断提示 +
+# **最后一行**。最后一行是超时动作（approve 时是"超时自动批准"），绝不隐藏。
+# ---------------------------------------------------------------------------
+$maxTextElements = 3
+$maxTitleLines = 2
+$maxDescLinesTotal = 4
+
+# ---------------------------------------------------------------------------
+# R7 §17 纯成对参数校验（**无任何副作用**，ValidateOnly 与生产路径共用）。
+#
+# 为什么必须是独立纯函数并放在**生产 try 之前**：R6 的校验写在
+# Build-ApprovalToastXml 里，而生产路径的 `New-Item(StateDir)` / `Register-UriScheme` /
+# `Ensure-AppId` / 状态文件 / 陈旧通知扫描都在调用构造器**之前**执行 ——
+# ValidateOnly 提前校验不代表生产提前校验，非法输入仍能改 HKCU/清旧状态。
+# R7 把这条校验提到所有副作用之前；构造器内保留同一防御（纵深防御，防绕过）。
+#
+# | provided 组合            | 行为 |
+# | 都未提供                 | legacy 兼容（显式兼容路径）→ 返回 'legacy' |
+# | 都提供且非空白            | 结构化 title/decision/context → 返回 'structured' |
+# | 只提供一项 / 任一空白/空串 | fail-loud（throw → 顶层 catch → exit 4，零副作用） |
+function Test-ApprovalPairRule([bool]$DecisionProvided, [bool]$ContextProvided,
+                               [string]$Decision, [string]$Context) {
+    $hasDecision = $DecisionProvided -and ($Decision.Trim().Length -gt 0)
+    $hasContext = $ContextProvided -and ($Context.Trim().Length -gt 0)
+    if ($DecisionProvided -xor $ContextProvided) {
+        throw ("approval card: structural fields must be paired (only one of them was bound; " +
+            "DecisionProvided=$DecisionProvided, ContextProvided=$ContextProvided); " +
+            "refusing to fall back to the legacy layout (R6/R7 rule: one-sided -> unavailable)")
+    }
+    if ($DecisionProvided -and $ContextProvided -and -not ($hasDecision -and $hasContext)) {
+        throw ("approval card: DecisionSummary and ContextSummary were both bound but are blank/empty; " +
+            "explicit blank is invalid input, not 'not provided' " +
+            "(nonBlank decision=$hasDecision, nonBlank context=$hasContext); " +
+            "refusing to fall back to the legacy layout (R6/R7 rule)")
+    }
+    return ($(if ($hasDecision -and $hasContext) { 'structured' } else { 'legacy' }))
+}
+
+function Build-ApprovalToastXml([string]$Title, [string]$Message, [string]$Id,
+                                [string]$Decision = '', [string]$Context = '',
+                                [bool]$DecisionProvided = $false, [bool]$ContextProvided = $false) {
+    # ── R6 §1 唯一规则：结构化/legacy 的判定用**顶层实际绑定**，不用空串猜测 ──
+    # 调用方（顶层）用 $PSBoundParameters.ContainsKey() 判定参数是否**显式出现**，
+    # 并把结果作为 -DecisionProvided/-ContextProvided 传进来。
+    # 为什么不能在函数里用空串判定：函数调用时默认值 `''` 总会被传，
+    # "显式空串"与"未提供"在这里**不可区分** —— R5 的 C 补丁用 IsNullOrWhiteSpace
+    # 把显式空白当"未提供"，违反 R6 冻结规则（显式空白 = 非法 → unavailable）。
+    # | provided 组合            | 行为 |
+    # | 都未提供                 | legacy 兼容（显式兼容路径） |
+    # | 都提供且非空白            | 结构化 title/decision/context |
+    # R7：成对规则判定收敛到 Test-ApprovalPairRule（与生产前置共用同一实现，
+    # 不留第二份会漂移的拷贝）。这里保留同防御作为纵深防御：即使调用方绕过前置校验，
+    # 构造器仍 fail-loud。
+    $pairMode = Test-ApprovalPairRule -DecisionProvided $DecisionProvided -ContextProvided $ContextProvided `
+                                      -Decision $Decision -Context $Context
+    $hasDecision = $DecisionProvided -and ($Decision.Trim().Length -gt 0)
+    $hasContext = $ContextProvided -and ($Context.Trim().Length -gt 0)
+    if ($hasDecision -and $hasContext) {
+        # ── R9 布局修复（最小改动）：复用脚本**已有**的"标题富余行"思路 ──────────
+        # R8 实机 FAIL 的机制（D §12.1 机械可核）：结构化路径把 decision 与 context
+        # 各放一个 <text>，描述行合计 = 1(decision) + 4(context 含摘要提示) = **5 > 4**，
+        # 排最末的"（摘要，详情见 DSH）"被 Windows 静默裁掉 —— 而那正是契约要求的
+        # "截断必须显式标记"。legacy 路径一直有预算吸收（把标题富余行拿去装正文），
+        # 结构化路径漏用了同一逻辑，不是 Windows 的锅。
+        #
+        # R9：decision挪进标题第二行。R10实机又证明，更窄的通知中心
+        # 仍会因原因折行裁掉context尾部的摘要提示。
+        # 安全语义不变且更强：decision 仍排最前（紧邻标题）、逐字完整、不参与截断。
+        # R11：仅把formatter生成的末尾完整提示行移到官方attribution位置。
+        # 普通正文保留任务/操作/原因，legacy与安全信息不变；实际可见性待实机。
+        #
+        # 行预算（逻辑行）：标题 = 1(title) + 1(decision) = 2/2；
+        # 描述 = 任务/操作/原因；attribution独立，不计作描述逻辑行。
+        # 铁律不变：不伪造命令/原因；协议、退出码、requestToken 均未改动。
+        $titleFirst = ($Title -replace '\r?\n', ' ')
+        $decisionClean = ($Decision -replace '\r?\n', ' ')
+        # 第一个 <text> = title + 换行 + decision（标题预算 2/2 恰好用满，
+        # 与 legacy 吸收先例一致：decision 紧随标题、先于一切动态摘要、逐字完整、
+        # 不参与任何截断预算）。第二个普通<text>是动态context。
+        $t1 = Escape-Xml ($titleFirst + "`n" + $decisionClean)
+        $contextLines = @($Context -split '\r?\n')
+        $summaryMark = '（摘要，详情见 DSH）'
+        $attributionLine = ''
+        # 只识别完整末行，不搜索/裁切用户原因中的类似文字。
+        if ($contextLines.Count -gt 1 -and $contextLines[-1] -ceq $summaryMark) {
+            $attributionLine = '      <text placement="attribution">' + (Escape-Xml $summaryMark) + '</text>'
+            $contextLines = @($contextLines[0..($contextLines.Count - 2)])
+        }
+        $t2 = Escape-Xml ($contextLines -join "`n")
+        $textBlock = (@(
+            '      <text>' + $t1 + '</text>'
+            '      <text>' + $t2 + '</text>'
+            if ($attributionLine -ne '') { $attributionLine }
+        ) -join [Environment]::NewLine)
+        return @"
+<toast scenario="reminder" activationType="protocol">
+  <visual>
+    <binding template="ToastGeneric">
+$textBlock
+    </binding>
+  </visual>
+  <actions>
+    <action content="批准" arguments="$scheme`:approve/$(Escape-Xml $Id)" activationType="protocol" />
+    <action content="拒绝" arguments="$scheme`:reject/$(Escape-Xml $Id)" activationType="protocol" />
+  </actions>
+</toast>
+"@
+    }
+    # 走到这里只可能是"两字段都未提供" → 显式 legacy 兼容路径。
+    # 旧实现在此还有一条 Write-Warning + 继续走 legacy 的分支；R6 §9 明令
+    # "只警告而继续运行不算按渠道不可用处理"，且该分支现已被上面的三条 fail-loud
+    # 全部覆盖（单侧、显式空对、两侧空白都在此之前 throw）。这里做防御性断言：
+    # 若还有任何一侧被绑定到非空值却落到 legacy，必须可见地失败而不是继续渲染。
+    if ($DecisionProvided -or $ContextProvided) {
+        throw ("approval card: legacy path reached with structural fields bound " +
+            "(DecisionProvided=$DecisionProvided, ContextProvided=$ContextProvided, " +
+            "nonBlankDecision=$hasDecision, nonBlankContext=$hasContext); " +
+            "this must have been rejected earlier (R6 rule)")
+    }
+
+    $titleLines = @(($Title -split "\r?\n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    if ($titleLines.Count -eq 0) { $titleLines = @('审批请求') }
+    if ($titleLines.Count -gt $maxTitleLines) {
+        # 标题自身超长：预算硬上限 2 行，**不能**追加第 3 行提示（那会超预算，
+        # 第一版就犯了这个错）。改为用提示**替换**第 2 行 —— 既保留首行、又显式示警。
+        $titleLines = @($titleLines[0]) + @('…（标题过长，请在 DSH 查看完整信息）')
+    }
+    $spareTitleLines = $maxTitleLines - $titleLines.Count
+    if ($spareTitleLines -lt 0) { $spareTitleLines = 0 }
+
+    $bodyLines = @(($Message -split "\r?\n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    $bodyBudget = $maxDescLinesTotal + $spareTitleLines
+    if ($bodyLines.Count -gt $bodyBudget) {
+        $keepHead = $bodyBudget - 2
+        if ($keepHead -lt 1) { $keepHead = 1 }
+        $headTop = $keepHead
+        if ($headTop -gt $bodyLines.Count) { $headTop = $bodyLines.Count }
+        $head = @($bodyLines[0..($headTop - 1)])
+        $tail = @($bodyLines[$bodyLines.Count - 1])
+        $bodyLines = @($head) + @('…（内容已截断，请在 DSH 查看完整信息）') + $tail
+    }
+
+    # 把标题富余行数用来吸收正文（A 卡片：标题 1 行 → 吸收 1 行正文）
+    $moveCount = $spareTitleLines
+    if ($moveCount -gt $bodyLines.Count) { $moveCount = $bodyLines.Count }
+    if ($moveCount -gt 0) {
+        $titleLines = @($titleLines) + @($bodyLines[0..($moveCount - 1)])
+        $rest = @($bodyLines | Select-Object -Skip $moveCount)
+    } else {
+        $rest = $bodyLines
+    }
+
+    # 剩余正文平分到 2 个描述 <text>（合计 ≤ 4 行，符合文档化预算）
+    $restCount = $rest.Count
+    $half = [int][Math]::Ceiling($restCount / 2)
+    $desc1Lines = @()
+    $desc2Lines = @()
+    if ($restCount -gt 0) {
+        if ($half -ge $restCount) {
+            $desc1Lines = $rest
+        } else {
+            $desc1Lines = @($rest[0..($half - 1)])
+            $desc2Lines = @($rest[$half..($restCount - 1)])
+        }
+    }
+
+    function Local-EscapeLines([string[]]$lines) {
+        if (@($lines).Count -eq 0) { return $null }
+        return (($lines | ForEach-Object { Escape-Xml $_ }) -join "`n")
+    }
+    $t1 = Escape-Xml ($titleLines -join "`n")
+    $t2 = Local-EscapeLines $desc1Lines
+    $t3 = Local-EscapeLines $desc2Lines
+
+    $textNodes = New-Object System.Collections.Generic.List[string]
+    $textNodes.Add('      <text>' + $t1 + '</text>')
+    if ($null -ne $t2) { $textNodes.Add('      <text>' + $t2 + '</text>') }
+    if ($null -ne $t3) { $textNodes.Add('      <text>' + $t3 + '</text>') }
+    $textBlock = ($textNodes -join [Environment]::NewLine)
+
+    return @"
+<toast scenario="reminder" activationType="protocol">
+  <visual>
+    <binding template="ToastGeneric">
+$textBlock
+    </binding>
+  </visual>
+  <actions>
+    <action content="批准" arguments="$scheme`:approve/$(Escape-Xml $Id)" activationType="protocol" />
+    <action content="拒绝" arguments="$scheme`:reject/$(Escape-Xml $Id)" activationType="protocol" />
+  </actions>
+</toast>
+"@
+}
+
+# ---------------------------------------------------------------------------
+# 维护入口：-ValidateOnly
+# 只构造并校验通知 XML，**不注册 URI、不写状态文件、不调用 Show()、不弹任何通知**。
+# 用途：在没有独占桌面时也能验证卡片布局（多行是否拆进合法的 <text> 结构、转义是否
+# 正确、LoadXml 是否接受）。退出码 0=通过 / 4=失败，不属于审批退出码契约。
+# ---------------------------------------------------------------------------
+if ($ValidateOnly) {
+    # R9：-ValidateOnly 的 TEXT> 诊断必须以 UTF-8 输出，不受控制台代码页影响。
+    # 否则 CI（windows-latest 控制台 CP 为 437/GBK 不定）与本机（936）对 CJK 的
+    # 解码不一致，测试里的中文字面量断言（如"（摘要，详情见 DSH）"）会随环境漂移
+    # —— R9 首轮 CI 正是因此 FAIL（本机绿、CI 红）。生产路径不受影响：生产不打印
+    # TEXT> 诊断，且该设置只改本进程 stdout 编码，退出即消失。
+    try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
+    try {
+        $xmlText = Build-ApprovalToastXml -Title $Title -Message $Message -Id 'validateonly0000' -Decision $DecisionSummary -Context $ContextSummary -DecisionProvided:$decisionProvided -ContextProvided:$contextProvided
+        $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
+        $doc.LoadXml($xmlText)
+        $nodes = $doc.GetElementsByTagName('text')
+        $actions = $doc.GetElementsByTagName('action')
+        Write-Output ("VALIDATE OK: textNodes={0} actionNodes={1}" -f @($nodes).Count, @($actions).Count)
+        foreach ($n in $nodes) {
+            $prefix = 'TEXT> '
+            if ($n.GetAttribute('placement') -ceq 'attribution') { $prefix = 'ATTRIBUTION> ' }
+            Write-Output ($prefix + ($n.InnerText -replace "`n", ' | '))
+        }
+        exit 0
+    } catch {
+        Write-Output ('VALIDATE FAILED: ' + (Format-Exception $_))
+        exit 4
+    }
+}
+
+# ── R7 §17：生产路径的**前置纯校验**（零副作用）────────────────────────────
+# 必须在 New-Item(StateDir) / Register-UriScheme / Ensure-AppId / 状态文件 /
+# 陈旧通知扫描之前执行：ValidateOnly 提前校验不代表生产提前校验，
+# 非法输入不得改 HKCU / 清旧状态。零注册/文件/通知副作用。
+# 构造器内保留同一防御（纵深防御）；CleanupToken/ClearAll 等维护入口不受本门影响。
+#
+# ⚠ 退出码必须是 **4（渠道不可用）**，不能是 PowerShell 未捕获异常的默认 1。
+#   本脚本契约里 exit 1 = "用户点了拒绝"（src/dialog.ts mapExitCode: case 1 ->
+#   'rejected'）。此处 throw 不在任何 try 内（生产 try 从 510 行才开始），
+#   在 $ErrorActionPreference='Stop' 下会以 exit 1 终止 —— 那会把"调用方传了非法
+#   参数"谎报成"人类拒绝了这次提权"，并写入审计为 rejected。
+#   因此这里显式捕获并 exit 4，与 -ValidateOnly 路径（exit 4）保持一致。
+try {
+    $pairMode = Test-ApprovalPairRule -DecisionProvided $decisionProvided -ContextProvided $contextProvided `
+                                      -Decision $DecisionSummary -Context $ContextSummary
+} catch {
+    Write-Output ('CARD INVALID: ' + (Format-Exception $_))
+    exit 4
+}
+
 $resultFile = $null
 $pendingFile = $null
 $mappingFile = $null
@@ -356,20 +640,9 @@ try {
         }
     } catch { Write-DebugLog ('sweep enumeration failed: ' + (Format-Exception $_)) }
 
-    $xmlString = @"
-<toast scenario="reminder" activationType="protocol">
-  <visual>
-    <binding template="ToastGeneric">
-      <text>$(Escape-Xml $Title)</text>
-      <text>$(Escape-Xml $Message)</text>
-    </binding>
-  </visual>
-  <actions>
-    <action content="批准" arguments="$scheme`:approve/$id" activationType="protocol" />
-    <action content="拒绝" arguments="$scheme`:reject/$id" activationType="protocol" />
-  </actions>
-</toast>
-"@
+    # 卡片 XML 由 Build-ApprovalToastXml 统一构造（多行布局与 ToastGeneric 预算见函数注释）。
+    # 传入本次真实 requestToken，协议 URI 的形态与改动前逐字一致。
+    $xmlString = Build-ApprovalToastXml -Title $Title -Message $Message -Id $id -Decision $DecisionSummary -Context $ContextSummary -DecisionProvided:$decisionProvided -ContextProvided:$contextProvided
 
     $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
     $xml.LoadXml($xmlString)

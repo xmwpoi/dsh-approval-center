@@ -1,17 +1,51 @@
 /**
- * 最小宿主契约层：对齐 @deepseek-ai/dsh-user-approval 公开类型与 Cordis waterfall 语义，
- * 避免把整套 DSH 打进插件运行时依赖树。两版宿主（0.1.5-rc.1 / 0.1.7-rc.2）的差异
- * 只有 displayReason（0.1.7-rc.2 新增，旧版请求不含该字段时按回退规则自然降级）。
- * 证据与冻结记录：docs/compat/contract-017.md。
+ * 最小宿主契约层：把本插件真正读到的宿主公开面收窄成结构化最小类型，
+ * 避免把整套 DSH 拖进插件运行时依赖树。
+ *
+ * 这里承载三类事实（冻结依据：docs/design/task-notification-contract.md）：
+ *  1) 审批 waterfall 的请求/结果词汇与展示回退链（§2.1/§2.2，证据 docs/compat/contract-017.md）；
+ *  2) 主/子会话身份判据与审批请求 → Session 解析（§2.4/§2.6，唯一判据 origin === 'subagent'）；
+ *  3) 会话标题的只读最小面（§2.5：标题只来自 session/title 事件流，**禁止**新增
+ *     `session.snapshotEvents()` 调用 —— 宿主已标记 deprecated "new calls are prohibited"）。
+ *
+ * 插件精确支持 DSH 0.1.7-rc.2；更早版本不在支持范围。
  */
 import type { ApprovalStatus } from './store.js';
-/** wire-safe 的 Agent 契约只保证 `id`；`session` 来自运行时增强（dsh-agent/lib/types/types.d.ts） */
+/**
+ * 宿主 Session 的最小结构面（本插件只读这三项，不把整套 DSH 类型拖进依赖树）。
+ * 依据：@deepseek-ai/dsh-session/lib/types/index.d.ts（`readonly header: SessionHeader`、
+ * `snapshotEvents(fromSeq?, toSeqExclusive?)`）与 types.d.ts 的 SessionHeader。
+ */
+export interface SessionLike {
+    readonly id?: string;
+    /** 始终存在（宿主保证）；`origin === 'subagent'` 是本插件唯一的子代理判据。 */
+    readonly header?: SessionHeaderLike;
+    /** 公开事件快照 API。⚠ 宿主已标记 @deprecated "new calls are prohibited"（0.1.7-rc.2）；
+     *  本插件接线层不得调用它——此字段仅为类型完整性与既有消费者保留。 */
+    snapshotEvents?: (fromSeq?: number, toSeqExclusive?: number) => readonly SessionEventLike[];
+}
+/** SessionHeader 的最小面（dsh-session types.d.ts）。root 会话 origin 缺省。 */
+export interface SessionHeaderLike {
+    readonly id?: string;
+    /** 目标版公开分类字段：子代理子会话为 'subagent'，root 会话为 undefined。 */
+    readonly origin?: string;
+    /** fork 谱系；**不作为主/子判据**（fork 也会保留父关系）。 */
+    readonly parentSession?: string;
+    /** 递归预算；**不作为主分类**。 */
+    readonly delegationDepth?: number;
+}
+/** SessionEvent 的最小面：本插件只读 type 与 data。 */
+export interface SessionEventLike {
+    readonly type: string;
+    readonly data?: {
+        readonly [key: string]: unknown;
+    };
+}
+/** wire-safe 的 Agent 契约只保证 `id`；`session` 来自运行时增强（dsh-agent runtime-types.d.ts:143） */
 export interface ApprovalRequestEvent {
     readonly agent: {
         readonly id?: string;
-        readonly session?: {
-            readonly id?: string;
-        };
+        readonly session?: SessionLike;
     };
     readonly toolName: string;
     readonly callId?: string;
@@ -79,3 +113,55 @@ export declare function approvalResultLabel(outcome: DialogOutcome, opts: {
 /** 审计状态词汇（与 store.ts ApprovalStatus 对齐的本地约束） */
 export declare const APPROVAL_STATUSES: readonly ["pending", "approved", "rejected", "timeout", "dismissed", "cancelled", "unavailable"];
 export declare function subagentEndLabel(stopReason: string | undefined): string;
+/** 会话身份分类。'unknown' 表示身份无法可靠确认——调用方必须走安全转交，不得当作主会话。 */
+export type SessionIdentity = 'root' | 'subagent' | 'unknown';
+/**
+ * 主/子身份判据（契约 §2.4 冻结）：`header.origin === 'subagent'` 是**唯一**判据。
+ *
+ * 为什么不看别的字段（逐条否决，均有宿主原文依据）：
+ * - `parentSession`：注释原文是 "The session this one was forked from (seed lineage)"，
+ *   **fork 也会保留父关系**，用它会把 fork 根会话误判成子代理。
+ * - `delegationDepth`：注释原文说明它是 "recursion budget"（递归预算），不是主分类。
+ * - `isSeeded`：fork seed 为 true，但 fork 根会话仍是主会话。
+ *
+ * root 会话该字段**缺省**（undefined）；宿主**不存在** 'root'/'main' 字面量，
+ * 所以判据必须是"等于 'subagent'"，绝不能写成"等于 'root'"。
+ */
+export declare function classifySessionOrigin(header: SessionHeaderLike | undefined): SessionIdentity;
+/** 宿主公开的按 id 查 live agent 的查询面（`ctx.agents.get(id)` → Agent | undefined）。 */
+export type AgentLookup = (id: string) => {
+    readonly session?: SessionLike;
+} | undefined;
+/**
+ * 审批请求 → 真实 Session 解析（契约 §2.6 冻结顺序）。
+ *
+ *   1) `req.agent.session`（运行时增强存在时最直接）
+ *   2) `lookup(req.agent.id)?.session`（宿主公开查询 API 查回）
+ *   3) 都拿不到 → undefined（身份无法确认）
+ *
+ * `req.agent` 的 wire-safe 公开面**只有 `id`**（dsh-agent 的 `Agent` 接口只声明
+ * `readonly id`），`session` 属运行时增强，**不能假定请求对象上带着它**。
+ *
+ * 返回 undefined 的语义是"本插件不得认领"：调用方必须 `next()` 恰一次交宿主其他
+ * 应答者，**绝不**静默自动批准或拒绝，也不得创建审批记录或弹窗。
+ */
+export declare function resolveRequestSession(req: {
+    readonly agent?: {
+        readonly id?: string;
+        readonly session?: SessionLike;
+    };
+} | undefined, lookup?: AgentLookup): SessionLike | undefined;
+/**
+ * 从事件流取**最后一条** `session/title` 的 title（契约 §2.5）。
+ *
+ * ⚠ **R2 裁决（有实证，见契约 §2.5）**：宿主已把 `snapshotEvents()` 标记为
+ *   `@deprecated … but new calls are prohibited`（0.1.7-rc.2）。
+ * 本插件**不得新增**对 `snapshotEvents()` 的调用，因此接线层**不再**用本函数做冷读。
+ * 本函数保留给"已经持有事件数组（来自受支持来源）"的消费者，
+ * 以及作为纯函数被单测覆盖；调用方必须自行保证事件来源是受支持的。
+ *
+ * 宿主 `Session` **没有** `title` 属性（只有 `header`，且 SessionHeader 不含 title）。
+ * 找不到、标题非字符串、或归一化后为空 → undefined（调用方回退 `会话 <短ID>`）。
+ * @deprecated 不要喂给它 `session.snapshotEvents()` 的结果（宿主禁止新增该调用）。
+ */
+export declare function latestTitleFromEvents(events: readonly SessionEventLike[] | undefined): string | undefined;
