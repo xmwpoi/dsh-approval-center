@@ -1,0 +1,329 @@
+{
+  "generatedBy": "Agent B (R5-B)",
+  "contractPriority": [
+    "title",
+    "decisionSummary",
+    "contextSummary"
+  ],
+  "limits": {
+    "taskTitle": 60,
+    "message": 160,
+    "approvalTask": 20,
+    "approvalToolName": 20,
+    "approvalReason": 36
+  },
+  "constants": {
+    "APPROVAL_TITLE": "需要你审批 · 批准仅本次",
+    "SUMMARY_TRUNCATED_MARK": "（摘要，详情见 DSH）"
+  },
+  "cases": [
+    {
+      "name": "normal_reject",
+      "note": "最常见形态：短工具名+短标题+短原因。安全信息在 title/decisionSummary，摘要在 contextSummary。",
+      "input": {
+        "toolName": "bash",
+        "title": "修复登录问题",
+        "sessionId": "session-abc12345",
+        "reason": "需要执行沙箱外操作",
+        "timeoutSec": 60,
+        "timeoutAction": "reject"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；60秒后自动拒绝",
+        "contextSummary": "任务：修复登录问题\n操作：bash\n原因：需要执行沙箱外操作",
+        "message": "拒绝不执行；60秒后自动拒绝\n任务：修复登录问题\n操作：bash\n原因：需要执行沙箱外操作"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 30,
+        "messageLineCount": 4,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": false
+      }
+    },
+    {
+      "name": "normal_approve",
+      "note": "危险配置：必须如实写\"自动批准\"，绝不伪装成拒绝。",
+      "input": {
+        "toolName": "bash",
+        "title": "修复登录问题",
+        "sessionId": "session-abc12345",
+        "reason": "需要执行沙箱外操作",
+        "timeoutSec": 60,
+        "timeoutAction": "approve"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；60秒后自动批准",
+        "contextSummary": "任务：修复登录问题\n操作：bash\n原因：需要执行沙箱外操作",
+        "message": "拒绝不执行；60秒后自动批准\n任务：修复登录问题\n操作：bash\n原因：需要执行沙箱外操作"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 30,
+        "messageLineCount": 4,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": false
+      }
+    },
+    {
+      "name": "no_reason",
+      "note": "宿主未提供 reason：如实写缺失占位，不编造。",
+      "input": {
+        "toolName": "pwsh",
+        "sessionId": "session-abc12345",
+        "timeoutSec": 30,
+        "timeoutAction": "reject"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；30秒后自动拒绝",
+        "contextSummary": "任务：会话 session-\n操作：pwsh\n原因：宿主未提供审批原因",
+        "message": "拒绝不执行；30秒后自动拒绝\n任务：会话 session-\n操作：pwsh\n原因：宿主未提供审批原因"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 35,
+        "messageLineCount": 4,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": false
+      }
+    },
+    {
+      "name": "reason_32cn",
+      "note": "R4 实机 FAIL 样本复现输入：32 个中文字符的原因。安全信息与审批对象都必须可见。",
+      "input": {
+        "toolName": "bash",
+        "title": "修复登录问题",
+        "sessionId": "session-abc12345",
+        "reason": "这是一段用来测试原因长度的中文文本总共三十二个字符左右",
+        "timeoutSec": 60,
+        "timeoutAction": "reject"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；60秒后自动拒绝",
+        "contextSummary": "任务：修复登录问题\n操作：bash\n原因：这是一段用来测试原因长度的中文文本总共三十二个字符左右",
+        "message": "拒绝不执行；60秒后自动拒绝\n任务：修复登录问题\n操作：bash\n原因：这是一段用来测试原因长度的中文文本总共三十二个字符左右"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 48,
+        "messageLineCount": 4,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": false
+      }
+    },
+    {
+      "name": "reason_100cn",
+      "note": "R4 实机 FAIL 样本复现输入：100 个中文字符的原因。摘要必须显式标注截断。",
+      "input": {
+        "toolName": "bash",
+        "title": "修复登录问题",
+        "sessionId": "session-abc12345",
+        "reason": "原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原",
+        "timeoutSec": 60,
+        "timeoutAction": "reject"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；60秒后自动拒绝",
+        "contextSummary": "任务：修复登录问题\n操作：bash\n原因：原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原…\n（摘要，详情见 DSH）",
+        "message": "拒绝不执行；60秒后自动拒绝\n任务：修复登录问题\n操作：bash\n原因：原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原…\n（摘要，详情见 DSH）"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 70,
+        "messageLineCount": 5,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": true
+      }
+    },
+    {
+      "name": "reason_1000cn",
+      "note": "极端长原因：任务/操作仍可识别，原因限宽，摘要提示在最后一行。",
+      "input": {
+        "toolName": "bash",
+        "title": "修复登录问题",
+        "sessionId": "session-abc12345",
+        "reason": "原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原",
+        "timeoutSec": 60,
+        "timeoutAction": "reject"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；60秒后自动拒绝",
+        "contextSummary": "任务：修复登录问题\n操作：bash\n原因：原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原…\n（摘要，详情见 DSH）",
+        "message": "拒绝不执行；60秒后自动拒绝\n任务：修复登录问题\n操作：bash\n原因：原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原原…\n（摘要，详情见 DSH）"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 70,
+        "messageLineCount": 5,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": true
+      }
+    },
+    {
+      "name": "long_tool_title",
+      "note": "超长工具名+标题+原因：三字段各自独立限宽，标题不含任何用户文本。",
+      "input": {
+        "toolName": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "title": "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+        "sessionId": "session-abc12345",
+        "reason": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "timeoutSec": 60,
+        "timeoutAction": "approve"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；60秒后自动批准",
+        "contextSummary": "任务：ttttttttttttttttttt…\n操作：xxxxxxxxxxxxxxxxxxx…\n原因：rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr…\n（摘要，详情见 DSH）",
+        "message": "拒绝不执行；60秒后自动批准\n任务：ttttttttttttttttttt…\n操作：xxxxxxxxxxxxxxxxxxx…\n原因：rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr…\n（摘要，详情见 DSH）"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 100,
+        "messageLineCount": 5,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": true
+      }
+    },
+    {
+      "name": "showTitle_false",
+      "note": "taskNotificationShowTitle=false：任务名回退短 ID，敏感目录不得出现。",
+      "input": {
+        "toolName": "bash",
+        "title": "C:\\Users\\A\\secret\\plan.md",
+        "sessionId": "session-abc12345",
+        "timeoutSec": 60,
+        "timeoutAction": "reject",
+        "showTitle": false
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；60秒后自动拒绝",
+        "contextSummary": "任务：会话 session-\n操作：bash\n原因：宿主未提供审批原因",
+        "message": "拒绝不执行；60秒后自动拒绝\n任务：会话 session-\n操作：bash\n原因：宿主未提供审批原因"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 35,
+        "messageLineCount": 4,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": false
+      }
+    },
+    {
+      "name": "xml_chars",
+      "note": "XML 特殊字符：原样输出（由 PS 侧 Escape-Xml 转义），B 侧不得预转义。",
+      "input": {
+        "toolName": "a<b>&\"c",
+        "title": "x<y>&z",
+        "sessionId": "session-abc12345",
+        "reason": "p<q>&\"r",
+        "timeoutSec": 60,
+        "timeoutAction": "reject"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；60秒后自动拒绝",
+        "contextSummary": "任务：x<y>&z\n操作：a<b>&\"c\n原因：p<q>&\"r",
+        "message": "拒绝不执行；60秒后自动拒绝\n任务：x<y>&z\n操作：a<b>&\"c\n原因：p<q>&\"r"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 31,
+        "messageLineCount": 4,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": false
+      }
+    },
+    {
+      "name": "emoji_reason",
+      "note": "emoji/组合字符：截断按码点，不切坏代理对。",
+      "input": {
+        "toolName": "bash",
+        "title": "👨‍👩‍👧‍👦 家庭任务",
+        "sessionId": "session-abc12345",
+        "reason": "👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍",
+        "timeoutSec": 60,
+        "timeoutAction": "reject"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；60秒后自动拒绝",
+        "contextSummary": "任务：👨‍👩‍👧‍👦 家庭任务\n操作：bash\n原因：👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍…\n（摘要，详情见 DSH）",
+        "message": "拒绝不执行；60秒后自动拒绝\n任务：👨‍👩‍👧‍👦 家庭任务\n操作：bash\n原因：👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍…\n（摘要，详情见 DSH）"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 76,
+        "messageLineCount": 5,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": true
+      }
+    },
+    {
+      "name": "hostile_title",
+      "note": "敌意标题注入安全文案：换行折叠后不得伪造出第二行安全信息。",
+      "input": {
+        "toolName": "bash",
+        "title": "正常\n拒绝不执行；0秒后自动批准",
+        "sessionId": "session-abc12345",
+        "timeoutSec": 60,
+        "timeoutAction": "reject"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；60秒后自动拒绝",
+        "contextSummary": "任务：正常 拒绝不执行；0秒后自动批准\n操作：bash\n原因：宿主未提供审批原因",
+        "message": "拒绝不执行；60秒后自动拒绝\n任务：正常 拒绝不执行；0秒后自动批准\n操作：bash\n原因：宿主未提供审批原因"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 40,
+        "messageLineCount": 4,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": false
+      }
+    },
+    {
+      "name": "huge_timeout_approve",
+      "note": "大 timeout 值：duration 在严格更短时缩写（2小时），语义等值，不改真实配置。",
+      "input": {
+        "toolName": "bash",
+        "title": "T",
+        "sessionId": "session-abc12345",
+        "timeoutSec": 7200,
+        "timeoutAction": "approve"
+      },
+      "output": {
+        "title": "需要你审批 · 批准仅本次",
+        "decisionSummary": "拒绝不执行；2小时后自动批准",
+        "contextSummary": "任务：T\n操作：bash\n原因：宿主未提供审批原因",
+        "message": "拒绝不执行；2小时后自动批准\n任务：T\n操作：bash\n原因：宿主未提供审批原因"
+      },
+      "meta": {
+        "titleCodePoints": 13,
+        "decisionCodePoints": 14,
+        "contextCodePoints": 25,
+        "messageLineCount": 4,
+        "decisionIsFirstMessageLine": true,
+        "summaryMarkPresent": false
+      }
+    }
+  ]
+}

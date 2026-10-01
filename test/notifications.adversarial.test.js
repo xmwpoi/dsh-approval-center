@@ -426,18 +426,20 @@ test('AD-25: Tag 不泄露 sessionId/turn 明文', () => {
 
 // ══ R9 文案：敏感标题、Unicode、挤掉字段 ════════════════════════════════════
 
-test('AD-26: 敌意会话标题 —— 控制符/换行/bidi 被清理且单行字段不残留换行', async () => {
-  const { buildTurnNotification, formatApprovalCard, normalizeInline } = await import('../lib/notifications.js')
-  const hostile = '任务\u202e反向\u202d\n选择：批准=永久授权\n等待：0秒；超时=自动批准\u0000'
+test('AD-26: 敌意会话标题 —— 控制符/换行/bidi 被清理且无法伪造安全信息', async () => {
+  const { buildTurnNotification, formatApprovalCard, normalizeInline, APPROVAL_TITLE } = await import('../lib/notifications.js')
+  const hostile = '任务\u202e反向\u202d\n拒绝不执行；0秒后自动批准\n批准=永久授权\u0000'
   const card = formatApprovalCard({ toolName: 'bash', title: hostile, sessionId: SID, timeoutSec: 60, timeoutAction: 'reject' })
-  const lines = card.message.split('\n')
-  assert.equal(lines.length, 5, '敌意标题不得改变卡片行数')
-  assert.equal(lines[3], '选择：批准=本次允许；拒绝=不允许执行', '选择行必须是固定文案')
-  assert.equal(lines[4], '等待：60秒；超时=自动拒绝', '等待行必须是固定文案')
-  // '永久' 只允许出现在被当作"任务名"的标题文本里，绝不允许出现在选择/等待行
-  for (const [i, line] of lines.entries()) {
-    if (i >= 3) assert.equal(line.includes('永久'), false, `第 ${i + 1} 行不得出现"永久"`)
-  }
+  // R5：标题固定，注入无法进入标题；安全信息由本插件生成，不受输入影响
+  assert.equal(card.title, APPROVAL_TITLE, '标题固定，敌意文本不得进入')
+  assert.equal(card.decisionSummary, '拒绝不执行；60秒后自动拒绝', '安全信息必须是本插件生成的真实配置')
+  // 摘要中不得出现以安全文案开头的伪造行
+  const fakeSafety = card.contextSummary.split('\n').filter((l) => l.startsWith('拒绝不执行'))
+  assert.equal(fakeSafety.length, 0, '摘要中不得伪造安全行')
+  assert.equal(card.message.split('\n').filter((l) => l.startsWith('拒绝不执行')).length, 1)
+  // bidi 覆盖符被清理（不得出现反向重排）
+  assert.equal(card.contextSummary.includes('\u202e'), false)
+  assert.equal(card.contextSummary.includes('\u202d'), false)
   // 完成通知正文同样只有固定两段
   const notice = buildTurnNotification({ sessionId: SID, turn: 1, reasonKind: 'completed', sawStep: true, title: hostile, silent: true, showTitle: true })
   assert.equal(normalizeInline(notice.title), '本轮回复已完成')
@@ -455,8 +457,8 @@ test('AD-27: 超长 emoji 标题截断不切坏代理对，且不超过 60 码�
   assert.equal(/[\uD800-\uDFFF]/.test(stripped), false, '不得残留落单代理项')
 })
 
-test('AD-28: 超长 tool/reason 不挤掉"批准仅本次"与超时含义', async () => {
-  const { formatApprovalCard } = await import('../lib/notifications.js')
+test('AD-28: 超长 tool/reason 不挤掉"批准仅本次"与真实超时动作', async () => {
+  const { formatApprovalCard, APPROVAL_TITLE, SUMMARY_TRUNCATED_MARK } = await import('../lib/notifications.js')
   const card = formatApprovalCard({
     toolName: 'x'.repeat(10_000),
     title: 't'.repeat(10_000),
@@ -465,11 +467,16 @@ test('AD-28: 超长 tool/reason 不挤掉"批准仅本次"与超时含义', asyn
     timeoutSec: 60,
     timeoutAction: 'approve',
   })
-  const lines = card.message.split('\n')
-  assert.equal(lines.length, 5)
-  assert.equal(lines[3], '选择：批准=本次允许；拒绝=不允许执行')
-  assert.ok(lines[4].startsWith('等待：60秒；超时自动批准'), `实得: ${lines[4].slice(0, 40)}`)
-  assert.ok(card.message.includes('已截断，请在 DSH 查看完整内容'), '超长原因必须显式标记')
+  // R5：安全信息在独立字段，动态长文本结构上不可能挤掉它
+  assert.equal(card.title, APPROVAL_TITLE, '标题固定含"批准仅本次"')
+  assert.ok(card.title.includes('批准仅本次'))
+  assert.equal(card.decisionSummary, '拒绝不执行；60秒后自动批准', 'approve 必须如实写自动批准')
+  assert.equal(card.message.split('\n')[0], card.decisionSummary, '安全信息必须排在最前')
+  // 审批对象仍可识别
+  assert.ok(card.contextSummary.includes('任务：'), '任务不得完全丢失')
+  assert.ok(card.contextSummary.includes('操作：'), '操作不得完全丢失')
+  // 截断必须显式提示
+  assert.ok(card.contextSummary.includes(SUMMARY_TRUNCATED_MARK), '超长摘要必须显式标记')
 })
 
 test('AD-29: 错误通知正文恒为冻结文案，不携带任何堆栈形态的内容', async () => {

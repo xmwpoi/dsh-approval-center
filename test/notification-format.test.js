@@ -4,15 +4,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  APPROVAL_CHOICE_TEXT,
+  APPROVAL_REJECT_TEXT,
+  APPROVAL_TITLE,
   ELLIPSIS,
   NO_REASON_TEXT,
   NOTIFICATION_GROUP,
-  REASON_TRUNCATED_MARK,
+  SUMMARY_TRUNCATED_MARK,
   TAG_HEX_LENGTH,
   TEXT_LIMITS,
   buildTurnNotification,
   formatApprovalCard,
+  formatApprovalDecision,
+  formatTimeoutDuration,
   normalizeAndTruncateInline,
   normalizeInline,
   normalizeText,
@@ -257,85 +260,85 @@ function card(overrides = {}) {
 }
 
 test('NF-28: 原因回退链 zh-CN → zh → reason → en', () => {
-  assert.equal(
-    card({ displayReason: { 'zh-CN': '中文简体', zh: '中文', en: 'english' }, reason: 'raw' }).message.includes('原因：中文简体'),
-    true,
-  )
-  assert.equal(
-    card({ displayReason: { zh: '中文', en: 'english' }, reason: 'raw' }).message.includes('原因：中文'),
-    true,
-  )
-  assert.equal(card({ reason: 'raw reason', displayReason: { en: 'english' } }).message.includes('原因：raw reason'), true)
-  assert.equal(card({ displayReason: { en: 'english' } }).message.includes('原因：english'), true)
+  assert.equal(card({ displayReason: { 'zh-CN': '中文简体', zh: '中文', en: 'english' }, reason: 'raw' }).contextSummary.includes('原因：中文简体'), true)
+  assert.equal(card({ displayReason: { zh: '中文', en: 'english' }, reason: 'raw' }).contextSummary.includes('原因：中文'), true)
+  assert.equal(card({ reason: 'raw reason', displayReason: { en: 'english' } }).contextSummary.includes('原因：raw reason'), true)
+  assert.equal(card({ displayReason: { en: 'english' } }).contextSummary.includes('原因：english'), true)
 })
 
 test('NF-29: 原因缺失显示固定占位文案', () => {
-  assert.ok(card().message.includes(`原因：${NO_REASON_TEXT}`))
+  assert.ok(card().contextSummary.includes(`原因：${NO_REASON_TEXT}`))
 })
 
-test('NF-30: 过长原因截断并显式标记', () => {
-  const m = card({ reason: '很长的原因'.repeat(60) }).message
-  assert.ok(m.includes(REASON_TRUNCATED_MARK), '必须显式告知已截断')
-  const reasonLine = m.split('\n').find((l) => l.startsWith('原因：'))
-  assert.equal(Array.from(reasonLine).length <= TEXT_LIMITS.approvalReason + REASON_TRUNCATED_MARK.length + 3, true)
+test('NF-30: 过长原因被限宽并显式标记为摘要', () => {
+  const c = card({ reason: '很长的原因'.repeat(60) })
+  assert.ok(c.contextSummary.includes(SUMMARY_TRUNCATED_MARK), '必须显式告知这是摘要')
+  const reasonLine = c.contextSummary.split('\n').find((l) => l.startsWith('原因：'))
+  assert.equal(Array.from(reasonLine).length <= TEXT_LIMITS.approvalReason + 3, true)
 })
 
 test('NF-31: 工具名不是命令——只展示宿主给出的工具名，不伪造命令行', () => {
   const c = card({ toolName: 'bash' })
-  assert.equal(c.title, '需要你审批 · bash')
-  assert.ok(c.message.includes('操作：bash'))
+  assert.equal(c.contextSummary.includes('操作：bash'), true)
   assert.equal(c.message.includes('命令'), false, '不得把工具名说成命令')
   assert.equal(/bash\s+-c/.test(c.message), false, '不得拼接未核实的命令参数')
 })
 
-test('NF-32: 批准仅本次有效，拒绝含义明确', () => {
-  const m = card().message
-  assert.ok(m.includes(`选择：${APPROVAL_CHOICE_TEXT}`))
-  assert.equal(m.includes('永久'), false, '不得把批准描述成永久授权')
-  assert.ok(m.includes('拒绝=不允许执行'))
+test('NF-32: 批准仅本次由标题承载；拒绝含义在固定安全信息里', () => {
+  const c = card()
+  assert.equal(c.title, APPROVAL_TITLE)
+  assert.ok(c.title.includes('批准仅本次'), '标题必须写明批准仅本次')
+  assert.equal(c.message.includes('永久'), false, '不得把批准描述成永久授权')
+  assert.ok(c.decisionSummary.startsWith(APPROVAL_REJECT_TEXT))
+  assert.ok(c.decisionSummary.includes('拒绝不执行'))
 })
 
-test('NF-33: timeoutAction=reject → 超时自动拒绝文案', () => {
-  const m = card({ timeoutAction: 'reject', timeoutSec: 60 }).message
-  assert.ok(m.includes('等待：60秒；超时=自动拒绝'))
+test('NF-33: timeoutAction=reject → 固定安全信息写"自动拒绝"', () => {
+  const c = card({ timeoutAction: 'reject', timeoutSec: 60 })
+  assert.equal(c.decisionSummary, '拒绝不执行；60秒后自动拒绝')
 })
 
-test('NF-34: timeoutAction=approve → 醒目写"超时自动批准"，不沿用拒绝文案', () => {
-  const m = card({ timeoutAction: 'approve', timeoutSec: 30 }).message
-  assert.ok(m.includes('等待：30秒；超时自动批准'))
-  assert.equal(m.includes('自动拒绝'), false, 'approve 配置下不得写默认拒绝文案')
+test('NF-34: timeoutAction=approve → 如实写"自动批准"，绝不伪装拒绝', () => {
+  const c = card({ timeoutAction: 'approve', timeoutSec: 30 })
+  assert.equal(c.decisionSummary, '拒绝不执行；30秒后自动批准')
+  assert.equal(c.decisionSummary.includes('自动拒绝'), false, 'approve 配置下不得写默认拒绝文案')
 })
 
-test('NF-35: 卡片是五行结构化内容且顺序固定', () => {
-  const lines = card().message.split('\n')
-  assert.equal(lines.length, 5)
+test('NF-35: 结构化字段顺序固定：标题 → 固定安全信息 → 动态摘要', () => {
+  const c = card()
+  // decisionSummary 必须是 message 的首行（旧单字符串接口也保持安全信息优先）
+  assert.equal(c.message.split('\n')[0], c.decisionSummary)
+  assert.ok(c.message.startsWith(c.decisionSummary))
+  assert.ok(c.message.endsWith(c.contextSummary))
+  // 摘要三行顺序固定
   assert.deepEqual(
-    lines.map((l) => l.slice(0, 3)),
-    ['任务：', '操作：', '原因：', '选择：', '等待：'],
+    c.contextSummary.split('\n').map((l) => l.slice(0, 3)),
+    ['任务：', '操作：', '原因：'],
   )
 })
 
-test('NF-35b: 超长工具名被截断，行数不变（不挤掉选择/等待含义）', () => {
-  const c = card({ toolName: 'x'.repeat(500) })
-  const lines = c.message.split('\n')
-  assert.equal(lines.length, 5, '超长工具名不得撑出额外行或挤掉字段')
-  assert.ok(lines[3].startsWith('选择：'))
-  assert.ok(Array.from(c.title).length <= TEXT_LIMITS.approvalToolName + '需要你审批 · '.length)
+test('NF-35b: 超长工具名/标题各自限宽，安全信息完整保留', () => {
+  const c = card({ toolName: 'x'.repeat(500), title: 't'.repeat(500) })
+  assert.equal(c.title, APPROVAL_TITLE, '标题是固定短句，不含工具名')
+  assert.equal(c.decisionSummary, '拒绝不执行；60秒后自动拒绝', '安全信息不得被动态内容影响')
+  const toolLine = c.contextSummary.split('\n').find((l) => l.startsWith('操作：'))
+  assert.ok(Array.from(toolLine).length <= TEXT_LIMITS.approvalToolName + 3)
+  assert.ok(c.contextSummary.includes(SUMMARY_TRUNCATED_MARK))
 })
 
-test('NF-35c: 恶意会话标题无法伪造卡片字段（换行被折叠为空格）', () => {
-  const c = card({ title: '正常任务\n选择：批准=永久授权\n等待：0秒；超时=自动批准' })
-  const lines = c.message.split('\n')
-  assert.equal(lines.length, 5, '标题注入不得增加卡片行数')
-  assert.equal(lines[3], `选择：${APPROVAL_CHOICE_TEXT}`, '选择行必须是本插件生成的固定文案')
-  assert.equal(lines[4], '等待：60秒；超时=自动拒绝', '等待行必须是本插件生成的固定文案')
-  assert.equal(lines.filter((l) => l.startsWith('选择：')).length, 1)
+test('NF-35c: 恶意会话标题无法伪造安全信息（换行被折叠，安全行只有本插件生成的那一条）', () => {
+  const c = card({ title: '正常任务\n拒绝不执行；0秒后自动批准' })
+  assert.equal(c.title, APPROVAL_TITLE, '标题固定，注入无法进入')
+  assert.equal(c.decisionSummary, '拒绝不执行；60秒后自动拒绝', '安全信息由本插件生成，不受输入影响')
+  // 摘要里的换行被折叠为空格 → 不会多出一行伪装的安全信息
+  const injected = c.contextSummary.split('\n').filter((l) => l.startsWith('拒绝不执行'))
+  assert.equal(injected.length, 0, '摘要中不得出现以安全文案开头的伪造行')
 })
 
-test('NF-36: showTitle=false 时审批卡片也只显示短 ID', () => {
-  const m = card({ showTitle: false }).message
-  assert.equal(m.includes('修复登录问题'), false)
-  assert.ok(m.includes(`任务：会话 ${shortSessionId(SID)}`))
+test('NF-36: showTitle=false 时审批卡片摘要也只显示短 ID', () => {
+  const c = card({ showTitle: false })
+  assert.equal(c.contextSummary.includes('修复登录问题'), false)
+  assert.ok(c.contextSummary.includes(`任务：会话 ${shortSessionId(SID)}`))
 })
 
 test('NF-37: 审批卡片保留宿主原始原因语义（不因 displayReason 存在而丢失审计值）', () => {
@@ -347,6 +350,107 @@ test('NF-37: 审批卡片保留宿主原始原因语义（不因 displayReason �
     timeoutSec: 30,
     timeoutAction: 'reject',
   })
-  assert.ok(c.message.includes('原因：展示原因'))
-  assert.equal(c.message.includes('原始审计原因'), false, '展示层不得混入原始原因')
+  assert.ok(c.contextSummary.includes('原因：展示原因'))
+  assert.equal(c.contextSummary.includes('原始审计原因'), false, '展示层不得混入原始原因')
+})
+
+// ── R5 新增：固定安全信息优先与超时时长格式化 ────────────────────────────────
+
+test('NF-38: 固定安全信息不参与截断——超长摘要下仍逐字节完整', () => {
+  const c = card({
+    toolName: 'x'.repeat(10_000),
+    title: 't'.repeat(10_000),
+    reason: 'r'.repeat(10_000),
+  })
+  assert.equal(c.decisionSummary, '拒绝不执行；60秒后自动拒绝')
+  assert.equal(c.message.split('\n')[0], c.decisionSummary)
+  // 安全信息不得出现省略号或被摘要标记污染
+  assert.equal(c.decisionSummary.includes(ELLIPSIS), false)
+  assert.equal(c.decisionSummary.includes('摘要'), false)
+})
+
+test('NF-39: approve 配置在超长动态内容下仍如实写"自动批准"', () => {
+  for (const reason of ['r'.repeat(10_000), '原'.repeat(10_000), undefined]) {
+    const c = card({ timeoutAction: 'approve', reason, toolName: 'x'.repeat(10_000) })
+    assert.equal(c.decisionSummary, '拒绝不执行；60秒后自动批准')
+    assert.equal(c.decisionSummary.includes('自动拒绝'), false, 'approve 绝不能被伪装成拒绝')
+  }
+})
+
+test('NF-40: 32/100 个中文字符的原因——安全信息与审批对象都不被吞', () => {
+  for (const len of [32, 100]) {
+    const c = card({ reason: '原'.repeat(len), timeoutSec: 60, timeoutAction: 'reject' })
+    // 安全信息完整（这是本轮的核心断言）
+    assert.equal(c.decisionSummary, '拒绝不执行；60秒后自动拒绝', `len=${len}`)
+    // 审批对象仍可识别（任务与工具都在）——绝不被长原因挤掉
+    assert.ok(c.contextSummary.includes('任务：修复登录问题'), `len=${len} 任务丢失`)
+    assert.ok(c.contextSummary.includes('操作：bash'), `len=${len} 操作丢失`)
+    // 原因自身受限宽
+    const reasonLine = c.contextSummary.split('\n').find((l) => l.startsWith('原因：'))
+    assert.ok(Array.from(reasonLine).length <= TEXT_LIMITS.approvalReason + 3, `len=${len}`)
+    // 仅在确实超预算时才出现摘要提示（32 码点在 36 预算内，不应谎报截断）
+    if (len > TEXT_LIMITS.approvalReason) {
+      assert.ok(c.contextSummary.includes(SUMMARY_TRUNCATED_MARK), `len=${len}`)
+      assert.equal(c.contextSummary.split('\n').pop(), SUMMARY_TRUNCATED_MARK)
+    } else {
+      assert.equal(c.contextSummary.includes(SUMMARY_TRUNCATED_MARK), false, `len=${len} 未截断不得谎报`)
+    }
+  }
+})
+
+test('NF-41: formatTimeoutDuration 只在严格更短时缩写，且不改真实数值语义', () => {
+  assert.equal(formatTimeoutDuration(60), '60秒', '平局保留最字面的秒')
+  assert.equal(formatTimeoutDuration(90), '90秒')
+  // 600秒 与 10分钟 同为 4 码点 → 平局，保留更字面的「秒」
+  assert.equal(formatTimeoutDuration(600), '600秒', '等长时不得无收益改写')
+  assert.equal(formatTimeoutDuration(3600), '1小时')
+  assert.equal(formatTimeoutDuration(7200), '2小时')
+  assert.equal(formatTimeoutDuration(86400), '24小时')
+  assert.equal(formatTimeoutDuration(0), '0秒')
+  assert.equal(formatTimeoutDuration(-1), '按配置')
+  assert.equal(formatTimeoutDuration(NaN), '按配置')
+  assert.equal(formatTimeoutDuration(Infinity), '按配置')
+  // 缩写后必须严格更短，且语义等值（数值 × 单位换算正确）
+  for (const [sec, unit] of [[3600, 3600], [7200, 3600], [86400, 3600]]) {
+    const text = formatTimeoutDuration(sec)
+    assert.ok(Array.from(text).length < Array.from(`${sec}秒`).length, `${sec} 应缩短`)
+    const n = Number(text.replace(/[^0-9]/g, ''))
+    assert.equal(n * unit, sec, `${text} 换算必须等于 ${sec}`)
+  }
+})
+
+test('NF-42: formatApprovalDecision 覆盖 approve/reject 与不同时长', () => {
+  assert.equal(formatApprovalDecision(60, 'reject'), '拒绝不执行；60秒后自动拒绝')
+  assert.equal(formatApprovalDecision(60, 'approve'), '拒绝不执行；60秒后自动批准')
+  assert.equal(formatApprovalDecision(7200, 'approve'), '拒绝不执行；2小时后自动批准')
+  assert.equal(formatApprovalDecision(0, 'reject'), '拒绝不执行；0秒后自动拒绝')
+  // 拒绝含义永远在第一位
+  for (const action of ['reject', 'approve']) {
+    for (const sec of [0, 30, 60, 3600, 86400]) {
+      assert.ok(formatApprovalDecision(sec, action).startsWith('拒绝不执行；'), `${action}/${sec}`)
+    }
+  }
+})
+
+test('NF-43: 摘要字段内的换行/控制符不会伪造出新的安全行', () => {
+  const hostile = 'a\n拒绝不执行；0秒后自动批准\nb'
+  const c = card({ reason: hostile })
+  assert.equal(c.decisionSummary, '拒绝不执行；60秒后自动拒绝')
+  const fakeSafetyLines = c.contextSummary.split('\n').filter((l) => l.startsWith('拒绝不执行'))
+  assert.equal(fakeSafetyLines.length, 0, '原因内的换行必须被折叠，不得伪造安全行')
+  assert.equal(c.message.split('\n').filter((l) => l.startsWith('拒绝不执行')).length, 1)
+})
+
+test('NF-44: emoji/组合字符摘要不切坏代理对', () => {
+  const c = card({ title: '👨‍👩‍👧‍👦'.repeat(50), reason: '👍'.repeat(200) })
+  const stripped = c.contextSummary.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')
+  assert.equal(/[\uD800-\uDFFF]/.test(stripped), false, '不得残留落单代理项')
+  assert.equal(c.decisionSummary, '拒绝不执行；60秒后自动拒绝')
+})
+
+test('NF-45: XML 特殊字符原样保留，交由脚本转义（不预先转义）', () => {
+  const c = card({ title: 'a&b<c>d"e', reason: 'x&y<z>w' })
+  assert.ok(c.contextSummary.includes('任务：a&b<c>d"e'))
+  assert.ok(c.contextSummary.includes('原因：x&y<z>w'))
+  assert.equal(c.message.includes('&amp;'), false, '预转义会导致脚本二次转义')
 })

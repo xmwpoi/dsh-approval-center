@@ -35,30 +35,45 @@ export declare const NOTIFICATION_GROUP: {
 };
 /** Tag 长度：16 位 ASCII 十六进制（计划 §2.4 冻结）。 */
 export declare const TAG_HEX_LENGTH = 16;
-/** 文本上界（计划 §2.3 冻结 60/160；审批原因上限为 B 提议值，待 A 批准）。 */
+/** 文本上界（计划 §2.3 冻结 60/160）。 */
 export declare const TEXT_LIMITS: {
     /** 任务名（会话标题）最大 Unicode 码点数 */
     readonly taskTitle: 60;
     /** 完成/错误通知正文最大 Unicode 码点数 */
     readonly message: 160;
-    /** 审批卡片"原因"行最大 Unicode 码点数 */
-    readonly approvalReason: 100;
     /**
-     * 审批卡片工具名最大 Unicode 码点数。
-     * 工具名会同时出现在标题与"操作"行；不设上限时一个异常长的名字能把"选择"/"等待"
-     * 挤出可视区，等于隐藏风险（计划 §2.7 禁止无限正文挤掉选择含义）。
-     * 宿主工具名是短标识符，40 码点对真实工具足够。
+     * 审批**摘要**内任务名预算。
+     *
+     * R5 裁决：安全信息（批准仅本次 / 拒绝含义 / 超时动作）已移入**独立的固定文本节点**，
+     * 因此摘要不再能把安全信息挤出可视区。这里的预算只服务另一个目标——
+     * 让"审批对象"（任务与工具）在真实窗口内可识别（R5 §18）。
+     * 数值是保守摘要预算，**不宣称码点数能保证单视觉行**；由 C 实机复测后 A 记录。
      */
-    readonly approvalToolName: 40;
+    readonly approvalTask: 20;
+    /**
+     * 审批摘要内工具名预算。工具名**不是命令**：只展示宿主给出的工具名，
+     * 绝不拼接未核实的命令或参数（R5 §14）。
+     */
+    readonly approvalToolName: 20;
+    /**
+     * 审批摘要内"原因"预算。原因排在摘要**最后**：空间不足时先牺牲原因，
+     * 绝不牺牲任务/操作（否则用户不知道自己在批什么）。
+     */
+    readonly approvalReason: 36;
 };
 /** 截断标记（正文被截断时追加）。 */
 export declare const ELLIPSIS = "\u2026";
-/** 审批原因被截断时的显式提示（计划 §2.7 要求"显式标记"）。 */
-export declare const REASON_TRUNCATED_MARK = "\uFF08\u5DF2\u622A\u65AD\uFF0C\u8BF7\u5728 DSH \u67E5\u770B\u5B8C\u6574\u5185\u5BB9\uFF09";
+/** 摘要被截断时的显式提示（R5 §14「摘要，详情见DSH」）。 */
+export declare const SUMMARY_TRUNCATED_MARK = "\uFF08\u6458\u8981\uFF0C\u8BE6\u60C5\u89C1 DSH\uFF09";
 /** 宿主未提供审批原因时的占位文案（计划 §2.7 冻结）。 */
 export declare const NO_REASON_TEXT = "\u5BBF\u4E3B\u672A\u63D0\u4F9B\u5BA1\u6279\u539F\u56E0";
-/** 审批选择含义（计划 §2.7 冻结）。 */
-export declare const APPROVAL_CHOICE_TEXT = "\u6279\u51C6=\u672C\u6B21\u5141\u8BB8\uFF1B\u62D2\u7EDD=\u4E0D\u5141\u8BB8\u6267\u884C";
+/**
+ * 审批卡片**标题**：固定短句，不含任何用户长文本。
+ * R5 §12：标题只承载"批准仅本次"这一条授权语义，禁止把任务或原因搬进标题挤占它。
+ */
+export declare const APPROVAL_TITLE = "\u9700\u8981\u4F60\u5BA1\u6279 \u00B7 \u6279\u51C6\u4EC5\u672C\u6B21";
+/** 拒绝含义（固定安全文本，R5 §13）。 */
+export declare const APPROVAL_REJECT_TEXT = "\u62D2\u7EDD\u4E0D\u6267\u884C";
 /** 归一化后的宿主事件（A 的身份适配器产出；本模块不自行决定宿主事件签名）。 */
 export interface TurnEventInput {
     kind: 'turn-start' | 'step-start' | 'turn-end';
@@ -126,9 +141,27 @@ export interface NotificationServiceOptions {
     /** 告警出口（默认 console.warn）。 */
     onWarn?: (message: string) => void;
 }
-/** 主审批卡片（纯函数产物；由 A 的接线送进 showApprovalToast 的 title/message）。 */
+/**
+ * 主审批卡片（纯函数产物）。
+ *
+ * R5 起为**结构化**产物：安全信息与动态摘要分属不同字段，使动态长文本
+ * **结构上不可能**先于安全信息耗尽可视空间（R5 §8/§13）。
+ */
 export interface ApprovalCard {
+    /** 固定安全标题（不含任何用户长文本）。 */
     title: string;
+    /**
+     * 固定安全信息：拒绝含义 + 真实超时动作。**永远排在最前**，不参与截断。
+     * `timeoutAction=approve` 时如实写"自动批准"，绝不伪装成拒绝或未知动作。
+     */
+    decisionSummary: string;
+    /** 动态摘要：任务 / 操作 / 原因（各字段独立限宽，可截断，带显式摘要提示）。 */
+    contextSummary: string;
+    /**
+     * 旧公共接口兼容字段（`DialogRequest.message` 仍只收一个字符串）。
+     * 内容 = decisionSummary 在前、contextSummary 在后，以 `\n` 连接——
+     * 因此即使下游仍按"整段正文"处理，安全信息也排在所有动态文本之前。
+     */
     message: string;
 }
 export interface ApprovalCardInput {
@@ -202,23 +235,42 @@ export declare function buildTurnNotification(input: {
     origin?: string | undefined;
 }): NotificationMessage | null;
 /**
- * 主审批卡片（计划 §2.7）。结构化多行 ToastGeneric 文本：
+ * 超时动作 → 人类可读时长。按**真实配置**格式化，绝不改变真实 timeout 数值。
+ *
+ * 规则：先算出「秒 / 分钟 / 小时」三种等价写法，**只在严格更短时**才采用缩写，
+ * 平局一律保留更字面的「秒」。这样 `60秒` 不会被无收益地改写成 `1分钟`，
+ * 而 `7200秒` 会缩成 `2小时`——既保留真实数值语义，又不让时长占掉摘要空间。
+ * 非有限/负值回退到「按配置」，不编造数字。
+ */
+export declare function formatTimeoutDuration(timeoutSec: number): string;
+/**
+ * 固定安全信息（R5 §13 冻结顺序）：
+ * `<拒绝含义>；<时长>后<真实超时动作>`。
+ *
+ * - 拒绝含义永远在第一位：用户最先看到"拒绝会发生什么"。
+ * - `timeoutAction=approve` 必须如实写"自动批准"，**不可**缩成未知动作或伪装拒绝。
+ * - 该串**不参与任何截断**：它是安全信息，不是摘要。
+ */
+export declare function formatApprovalDecision(timeoutSec: number, timeoutAction: 'reject' | 'approve'): string;
+/**
+ * 主审批卡片（R5 定向修复）。
+ *
+ * **冻结优先级**（R5 §11–§14）：动态长文本不得先于安全信息耗尽可视空间。
  *
  * ```
- * 需要你审批 · <工具名>
- * 任务：<标题或会话短ID>
- * 操作：<宿主工具名>
- * 原因：<displayReason zh-CN→zh→reason→en 回退，缺失时占位>
- * 选择：批准=本次允许；拒绝=不允许执行
- * 等待：<timeoutSec>秒；超时=<按实际配置>
+ * title            = 需要你审批 · 批准仅本次          （固定，无用户文本）
+ * decisionSummary  = 拒绝不执行；60秒后自动拒绝        （固定安全信息，不截断）
+ * contextSummary   = 任务：… / 操作：… / 原因：…        （动态摘要，可截断）
  * ```
  *
  * 硬约束：
  * - 原因回退链复用 host-contract 的冻结实现（单一事实来源，不重复实现）。
  * - 工具名不是命令：只展示宿主给出的工具名，绝不拼接未核实的命令/参数。
- * - 批准仅本次有效（"批准=本次允许"），不得描述成永久授权。
- * - timeoutAction=approve 时写"超时自动批准"并显式标注自动放行，绝不沿用默认拒绝文案。
- * - 原因截断时追加显式标记。
+ * - 批准仅本次由标题承载（"批准仅本次"），不得描述成永久授权。
+ * - `timeoutAction=approve` 时 decisionSummary 如实写"自动批准"，绝不沿用拒绝文案。
+ * - 摘要字段被截断时追加显式提示，不静默丢内容。
+ * - 任务/操作**不参与"先牺牲"策略**：只有原因排在其后、先被压缩；
+ *   但三者各自仍有独立限宽，任何一项都不会无限挤占。
  */
 export declare function formatApprovalCard(input: ApprovalCardInput): ApprovalCard;
 /**
