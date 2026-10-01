@@ -387,9 +387,24 @@ SubagentStopReason = 'completed' | 'aborted' | 'error' | 'max-tokens' | 'refusal
 **结构化传递方式**：Node 侧 `DialogRequest` 新增可选字段
 `decisionSummary?: string` / `contextSummary?: string`，
 sender 以**独立 PS 参数** `-DecisionSummary` / `-ContextSummary` 传给脚本。
-**两个字段必须成对提供**才走结构化路径；只给其一回退 legacy 并告警。
-旧调用（结果回执/手动脚本）不提供新字段，走 legacy 单 `Message` 路径。
-**新版主审批不得落 legacy。**
+**R6 §1 唯一规则（替代 R5 的"回退 legacy 并告警"）**：
+
+| 输入 | 行为 |
+|---|---|
+| 两字段都未提供（`undefined`） | legacy 兼容（显式兼容路径：结果回执/手动脚本） |
+| 两字段显式提供且为非空白字符串 | 结构化 title/decision/context |
+| 只提供一项 | **`unavailable`，禁止 legacy/投递** |
+| 显式空串/空白/`null`/非字符串/缺配对 | **`unavailable`，禁止 legacy/投递** |
+
+- Node 在 `showApprovalToast` **spawn 之前**预检：非法 `resolve('unavailable')` 且**零 spawn**。
+- `undefined` 按"未提供"处理（可选字段语义）；**任何已定义值**（含 `null`/空串/纯空白/非字符串）
+  进入成对预检。
+- PS 侧用**顶层实际绑定**（`$PSBoundParameters.ContainsKey`）判定，结果传入 XML 构造器——
+  函数默认值 `''` 无法区分"显式空串"与"未提供"（R5 的 `IsNullOrWhiteSpace` 补丁正是因此违反本规则）。
+- 非法在 AUMID 注册/状态文件/`Show()` 之前 fail-loud，映射为 **exit 4（unavailable）**，
+  **绝不是 exit 1（用户拒绝）**；ValidateOnly 与真实执行共用同一校验。
+- **警告后继续投递不算按渠道不可用处理。**
+- 新版主审批不得落 legacy。
 
 **新增限宽**：`approvalTask` 20 码点、`approvalToolName` 20 码点、`approvalReason` 36 码点。
 （旧限宽 60/40/100 已废弃——它们允许过长的内容挤掉选择/等待行。）
